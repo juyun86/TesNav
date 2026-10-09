@@ -24,6 +24,7 @@ import com.garan.tesnav.model.GeoPoint
 import com.garan.tesnav.AmapKeyActivity
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.service.NavigationForegroundService
+import com.garan.tesnav.service.NavigationDataSource
 import com.garan.tesnav.util.RouteGeometrySimplifier
 import java.util.Locale
 import kotlin.math.atan2
@@ -65,9 +66,9 @@ class SettingsDialog(
 
         @Suppress("DEPRECATION")
         val syncToggle = Switch(context).apply {
-            text = "同步特斯拉导航"
+            text = if (com.garan.tesnav.BuildConfig.EXTENDED_NAV_SOURCES) "通过 Home Assistant 同步特斯拉导航" else "同步特斯拉导航"
             textSize = 17f
-            isChecked = service.teslaSyncEnabled.value
+            isChecked = service.teslaSyncEnabled.value && !service.teslaBleSyncEnabled.value
         }
         val webSocketText = bodyText("Comma WebSocket：STOPPED")
         val teslaNavigationText = bodyText("is_tesla_nav_active：断开")
@@ -185,12 +186,35 @@ class SettingsDialog(
             addView(Button(context).apply {
                 text = "高德 Key 与配置指南"
                 setOnClickListener {
-                    if (service.stateStore.state.value.navigationMode == NavigationMode.IDLE) {
+                    if (service.canEditAmapKey()) {
                         context.startActivity(Intent(context, AmapKeyActivity::class.java))
                     } else android.widget.Toast.makeText(context, "请先结束当前导航再修改 Key", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }, matchWidthParams())
             addView(navAssistBlock, matchWidthParams())
+            if (com.garan.tesnav.BuildConfig.EXTENDED_NAV_SOURCES) addView(Button(context).apply {
+                text = "原车导航目的地 · 蓝牙自动同步"
+                setOnClickListener {
+                    context.startActivity(Intent(context, com.garan.tesnav.teslable.TeslaBleNavigationActivity::class.java))
+                }
+            }, matchWidthParams(dp(12)))
+            if (com.garan.tesnav.BuildConfig.EXTENDED_NAV_SOURCES) {
+                @Suppress("DEPRECATION")
+                addView(Switch(context).apply {
+                    text = "动态车速颜色"
+                    textSize = 17f
+                    isChecked = SpeedColorSettings.read(context).enabled
+                    setOnCheckedChangeListener { _, enabled ->
+                        context.getSharedPreferences(SpeedColorSettings.PREFS, Context.MODE_PRIVATE)
+                            .edit().putBoolean(SpeedColorSettings.ENABLED, enabled).apply()
+                    }
+                }, matchWidthParams(dp(12)))
+                addView(Button(context).apply {
+                    text = "车速阈值与颜色"
+                    setOnClickListener { SpeedColorSettings.showEditor(context) }
+                }, matchWidthParams())
+                addView(bodyText("达到设置的车速后使用对应颜色；未达到任何阈值时为白色。"), matchWidthParams())
+            }
             addView(syncToggle, matchWidthParams())
             addView(webSocketText, matchWidthParams(dp(12)))
             addView(teslaNavigationText, matchWidthParams(dp(6)))
@@ -250,9 +274,10 @@ class SettingsDialog(
 
         observationJobs += scope.launch {
             service.teslaSyncEnabled.collect { enabled ->
-                if (syncToggle.isChecked != enabled) {
+                val haEnabled = enabled && !service.teslaBleSyncEnabled.value
+                if (syncToggle.isChecked != haEnabled) {
                     applyingSyncToggle = true
-                    syncToggle.isChecked = enabled
+                    syncToggle.isChecked = haEnabled
                     applyingSyncToggle = false
                 }
             }
@@ -308,7 +333,7 @@ class SettingsDialog(
             service.homeAssistantClient.lastError.collect { renderError(homeAssistantErrorText, it) }
         }
         observationJobs += scope.launch {
-            service.stateStore.state.collect { state ->
+            service.selectedNavigationStateFlow.collect { state ->
                 renderError(navigationErrorText, state.errorMessage)
                 renderRouteOverview(
                     state.routePlanned,
@@ -355,7 +380,7 @@ class SettingsDialog(
         val path = service.currentPath().takeIf { routePlanned }
         val coordinates = path?.coordList.orEmpty()
         val signature = if (path == null || coordinates.size < 2) {
-            "empty"
+            "empty:${service.navigationDataSource.value}"
         } else {
             val first = coordinates.first()
             val last = coordinates.last()
@@ -365,10 +390,12 @@ class SettingsDialog(
         renderedRouteSignature = signature
 
         if (path == null || coordinates.size < 2) {
-            statsView.text = "当前没有规划路线"
+            val unavailable = if (service.navigationDataSource.value == NavigationDataSource.AMAP_AUTO)
+                "车机广播不提供完整路线坐标，请在高德车机查看路线" else "当前没有规划路线"
+            statsView.text = unavailable
             overviewView.setRoute(emptyList())
             simplifiedTitle.text = "精简坐标点全览"
-            simplifiedStatsView.text = "当前没有规划路线"
+            simplifiedStatsView.text = unavailable
             simplifiedOverviewView.setRoute(emptyList())
             return
         }

@@ -11,9 +11,17 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.service.NavigationForegroundService
+import com.garan.tesnav.service.NavigationDataSource
+import com.garan.tesnav.BuildConfig
+import com.garan.tesnav.model.withDisplayExpiry
+import com.garan.tesnav.export.NAVASSIST_UDP_RECEIVE_WINDOW_MS
+import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -24,7 +32,7 @@ import kotlin.math.ceil
 class NavigationStateDialog(
     private val context: Context,
     private val scope: CoroutineScope,
-    private val state: StateFlow<NavigationState>,
+    private val service: NavigationForegroundService,
 ) {
     private var updateJob: Job? = null
 
@@ -81,8 +89,19 @@ class NavigationStateDialog(
             setLayout((metrics.widthPixels * 0.90f).toInt(), (metrics.heightPixels * 0.86f).toInt())
         }
         updateJob = scope.launch {
-            state.collect { navigationState ->
-                statusText.text = displayText(navigationState)
+            combine(service.selectedNavigationStateFlow,
+                service.navAssistDeliveryState, service.oemVehicleLaneState.withDisplayExpiry(
+                    BuildConfig.NAV_ASSIST_V2_INTERVAL_MS + NAVASSIST_UDP_RECEIVE_WINDOW_MS,
+                    SystemClock::elapsedRealtime),
+                service.amapAutoBroadcasts.map(AmapAutoDisplayPresenter::details).distinctUntilChanged()) { state, delivery, oem, broadcasts ->
+                val provider = runCatching { NavigationDataSource.valueOf(state.navigationProvider).displayName }.getOrDefault("未知")
+                "来源：$provider\n\n" + displayText(state) + "\n\n" +
+                    NavigationDeliveryPresenter.text(delivery, SystemClock.elapsedRealtime()) +
+                    "\n\n" + LaneGuidancePresenter.observationText(state, oem) +
+                    if (BuildConfig.EXTENDED_NAV_SOURCES && state.navigationProvider == NavigationDataSource.AMAP_AUTO.name)
+                        "\n\n$broadcasts" else ""
+            }.collect { text ->
+                statusText.text = text + "\n\n" + service.diagnosticRecordingStatus
             }
         }
     }
@@ -98,21 +117,23 @@ class NavigationStateDialog(
             SimpleDateFormat("HH:mm", Locale.CHINA).format(Date(System.currentTimeMillis() + it * 1000L))
         } ?: "—"
         val source = when (state.locationSourceStatus) {
-            "vehicle" -> "车机 GPS"
-            "phone" -> "手机 GPS"
+            "vehicle", "vehicle-can" -> "车辆 GPS（C3 回传）"
+            "amap_auto" -> "高德车机定位"
+            "phone", "phone-gps" -> "手机 GPS"
             else -> "暂无可用定位"
         }
         val light = state.trafficLight?.takeIf { System.currentTimeMillis() - it.observedAtMs in 0..3_000 }?.let {
             val color = when (it.status) { 2 -> "红灯"; 3 -> "绿灯"; 4 -> "黄灯"; else -> "信号灯" }
             val direction = when (it.direction) { 1 -> "左转"; 2 -> "右转"; 3 -> "掉头"; 4 -> "直行"; else -> "方向未知" }
-            "$direction · $color${it.countdownSeconds?.let { seconds -> " $seconds 秒" }.orEmpty()}"
+            val elapsedSeconds = ((System.currentTimeMillis() - it.observedAtMs) / 1000L).toInt()
+            "$direction · $color${it.countdownSeconds?.let { seconds -> " ${maxOf(0, seconds - elapsedSeconds)} 秒" }.orEmpty()}"
         } ?: "暂无"
-        val next = listOfNotNull(state.nextRoad, state.nextManeuver.name.takeUnless { it == "NONE" || it == "UNKNOWN" }).joinToString(" · ").ifBlank { "—" }
+        val next = listOfNotNull(state.nextRoad, state.maneuver.name.takeUnless { it == "NONE" || it == "UNKNOWN" }).joinToString(" · ").ifBlank { "—" }
         return "行程\n" +
             "剩余 $duration · ${distance(state.routeRemainDistanceMeters)}\n预计 $arrival 到达\n\n" +
-            "下一步\n$next · ${distance(state.nextManeuverDistanceMeters ?: state.nextTurnDistanceMeters)}\n\n" +
+            "下一步\n$next · ${distance(state.nextTurnDistanceMeters)}\n\n" +
             "红绿灯\n$light\n\n" +
             "定位\n$source · ${if (state.gpsSignalWeak) "弱" else "正常"} · 精度 ${state.accuracy?.let { String.format(Locale.CHINA, "%.1f 米", it) } ?: "—"}\n\n" +
-            "导航联动\n路线${if (state.routeMatched == true) "已匹配" else "未匹配"} · C3 ${if (state.navAssistControlAllowed) "已接收导航" else "等待导航"}"
+            "导航联动\n路线${if (state.routeMatched == true) "已匹配" else "未匹配"} · 本地来源${if (state.navAssistControlAllowed) "有效" else "待确认（${state.navAssistSourceStatus}）"}"
     }
 }

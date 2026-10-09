@@ -128,6 +128,7 @@ data class NavigationState(
 
     // NavAssist v2-only observations. They are transient so the legacy v1 Gson
     // payload remains schema compatible with existing receivers.
+    @Transient val navigationProvider: String = "AMAP_API",
     @Transient val locationObservedAtMs: Long? = null,
     @Transient val locationReceivedElapsedMs: Long? = null,
     @Transient val locationSourceStatus: String = "none",
@@ -142,6 +143,8 @@ data class NavigationState(
     @Transient val navAssistSourceStatus: String = "unconfirmed",
     @Transient val guidanceObservedAtMs: Long? = null,
     @Transient val lanesObservedAtMs: Long? = null,
+    @Transient val autoDisplayLanes: List<LaneState> = emptyList(),
+    @Transient val autoDisplayLanesPathId: Long? = null,
     @Transient val routeObservedAtMs: Long? = null,
     @Transient val currentStepIndex: Int? = null,
     @Transient val currentLinkIndex: Int? = null,

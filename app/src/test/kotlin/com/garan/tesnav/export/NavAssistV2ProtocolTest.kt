@@ -17,6 +17,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavAssistV2ProtocolTest {
+    @Test fun `route bound lane selection has a stable event without a turn icon`() {
+        val base = activeState().copy(maneuver = NavigationManeuver.NONE)
+        val first = NavAssistV2Mapper.snapshot(base, "lane-route", 1, 4_000, 500)
+        val repeated = NavAssistV2Mapper.snapshot(base, "lane-route", 2, 4_100, 500)
+        assertTrue(first.maneuverEventId > 0L)
+        assertEquals(first.maneuverEventId, repeated.maneuverEventId)
+        assertEquals("none", first.guidance?.maneuver)
+        for (unqualified in listOf(base.copy(lanes = emptyList()), base.copy(lanesPathId = null),
+            base.copy(navAssistControlAllowed = false), base.copy(maneuver = NavigationManeuver.UNKNOWN))) {
+            assertEquals(0L, NavAssistV2Mapper.snapshot(unqualified, "lane-route", 3, 4_200, 500).maneuverEventId)
+        }
+    }
+
     @Test
     fun `fresh matching red countdown asks C3 to hold the current turn signal`() {
         val snapshot = NavAssistV2Mapper.snapshot(
@@ -59,6 +72,23 @@ class NavAssistV2ProtocolTest {
         assertEquals(first.routeRevision, blocked.routeRevision)
         assertEquals(first.maneuverEventId, rearmed.maneuverEventId)
         assertEquals(3L, rearmed.sequence)
+    }
+
+    @Test fun `source switch resets sequence and route revision domain without reusing events`() {
+        val session = NavAssistV2Session("api-source")
+        val api = session.nextSnapshot(activeState().copy(routeRevision = 5), 4_000)
+        session.switchSource()
+        val auto = session.nextSnapshot(activeState().copy(routeRevision = 1), 4_100)
+        assertTrue(api.sessionId != auto.sessionId)
+        assertEquals(1L, auto.sequence)
+        assertEquals(1L, auto.routeRevision)
+        assertTrue(api.maneuverEventId != auto.maneuverEventId)
+        val sameSource = session.nextSnapshot(activeState().copy(routeRevision = 1), 4_200)
+        assertEquals(auto.sessionId, sameSource.sessionId)
+        assertEquals(auto.maneuverEventId, sameSource.maneuverEventId)
+        session.switchSource()
+        val back = session.nextSnapshot(activeState().copy(routeRevision = 5), 4_300)
+        assertTrue(back.sessionId != api.sessionId && back.sessionId != auto.sessionId)
     }
 
     @Test

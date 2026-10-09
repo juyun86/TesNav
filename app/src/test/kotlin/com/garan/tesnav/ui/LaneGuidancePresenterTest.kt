@@ -29,6 +29,30 @@ class LaneGuidancePresenterTest {
     }
 
     @Test
+    fun `fresh keyed Auto recommendations remain visible as preview before source admission`() {
+        val state = NavigationState(navigationProvider = "AMAP_AUTO", navigationMode = NavigationMode.REALTIME,
+            routePlanned = true, routeMatched = true, navAssistSourceStatus = "awaitingLocation",
+            acceptedPathId = 7, guidancePathId = 7, lanesPathId = 7,
+            lanesObservedAtMs = 1_000, guidanceObservedAtMs = 1_000,
+            lanes = listOf(lane(0, true, LaneAction.LEFT), lane(1, false, LaneAction.STRAIGHT)))
+        val result = LaneGuidancePresenter.present(state, nowWallMs = 1_100)!!
+        assertEquals(2, result.items.size)
+        assertTrue(result.items.first().recommended)
+        assertTrue(result.items.none { it.current })
+        assertEquals(LaneRecommendationSide.NONE, result.recommendationSide)
+        assertTrue(result.title.contains("仅预览"))
+        assertNull(result.currentLaneStatus)
+        for (invalid in listOf(state.copy(lanesPathId = 8), state.copy(routeRecalculating = true),
+            state.copy(routeMatched = false), state.copy(lanesObservedAtMs = 4_001),
+            state.copy(guidanceObservedAtMs = 4_001), state.copy(navigationProvider = "AMAP_API"))) {
+            assertTrue(LaneGuidancePresenter.present(invalid, nowWallMs = 1_100)!!.items.isEmpty())
+        }
+        assertTrue(LaneGuidancePresenter.present(state, nowWallMs = 4_001)!!.items.isEmpty())
+        assertTrue(LaneGuidancePresenter.present(state.copy(guidanceObservedAtMs = 1), nowWallMs = 3_100)!!.items.isEmpty())
+        assertTrue(LaneGuidancePresenter.present(state)!!.items.isEmpty())
+    }
+
+    @Test
     fun `hides lane guidance outside active navigation`() {
         assertNull(
             LaneGuidancePresenter.present(
@@ -155,7 +179,7 @@ class LaneGuidancePresenterTest {
             NavigationState(navAssistSourceStatus = "healthy", navigationMode = NavigationMode.REALTIME),
             OemVehicleLaneState(receivedAtMs = 1L),
         )!!
-        assertEquals("C3 超车状态未收到", presentation.title)
+        assertEquals("C3 选道状态未收到", presentation.title)
     }
 
     @Test
@@ -262,6 +286,51 @@ class LaneGuidancePresenterTest {
         assertEquals(2, presentation.items.size)
         assertTrue(presentation.title.contains("仅供参考"))
         assertFalse(presentation.title.contains("路线建议靠"))
+    }
+
+    @Test fun `navigation and overtaking phases survive with and without lane recommendations`() {
+        val state = NavigationState(navigationMode = NavigationMode.REALTIME, navAssistSourceStatus = "healthy")
+        for ((reason, expected) in mapOf(
+            "heuristicSignaling" to "已请求打灯",
+            "heuristicReady" to "等待模型启动",
+            "heuristicChanging" to "报告执行中",
+            "efficiency:heuristicChanging" to "报告执行中",
+            "laneChangeComplete" to "变道完成",
+            "laneChangeCancelled" to "已取消",
+            "oem399LeftDenied" to "否决左侧",
+            "heuristicWaitingCrossing" to "等待允许跨越",
+        )) {
+            val oem = OemVehicleLaneState(receivedAtMs = 1L,
+                c3LaneDecision = C3LaneDecision(reason, true, "left"))
+            val noLanes = LaneGuidancePresenter.present(state, oem)!!
+            assertTrue("$reason: ${noLanes.title}", noLanes.title.contains(expected))
+            assertEquals(reason.startsWith("efficiency"), noLanes.title.contains("C3 超车"))
+            val lanes = LaneGuidancePresenter.present(state.copy(
+                lanes = listOf(lane(0, true, LaneAction.LEFT)), unkeyedRouteFactsConfirmed = true), oem)!!
+            assertTrue(lanes.currentLaneStatus!!.contains(expected))
+        }
+    }
+
+    @Test fun `observation dialog distinguishes membership ambiguity and expired feedback`() {
+        val state = NavigationState(
+            navAssistSourceStatus = "healthy", navigationMode = NavigationMode.REALTIME,
+            unkeyedRouteFactsConfirmed = true, routeMatched = true,
+            lanes = (0..3).map { lane(it, it == 1, LaneAction.STRAIGHT) },
+        )
+        val left = OemVehicleLaneState(position = OemLanePosition.LEFTMOST, positionValid = true)
+        assertTrue(LaneGuidancePresenter.observationText(state, left)
+            .contains("本车是否在推荐车道：原车报告：不在推荐车道"))
+        assertTrue(LaneGuidancePresenter.observationText(state.copy(lanes = listOf(
+            lane(0, true, LaneAction.LEFT), lane(1, false, LaneAction.STRAIGHT))), left)
+            .contains("本车是否在推荐车道：原车报告：在推荐车道"))
+        assertTrue(LaneGuidancePresenter.observationText(state, left.copy(position = OemLanePosition.MIDDLE))
+            .contains("无法区分具体车道"))
+        val expired = left.copy(receivedAtElapsedMs = 10L).forDisplay(510L, 500L)
+        val expiredText = LaneGuidancePresenter.observationText(state, expired)
+        assertTrue(expiredText.contains("回执已过期"))
+        assertTrue(expiredText.contains("原车车道位置未知 · 无法判定"))
+        assertTrue(LaneGuidancePresenter.observationText(state.copy(routeMatched = false), left)
+            .contains("路线与车道提示未对齐 · 无法判定"))
     }
 
     private fun lane(index: Int, recommended: Boolean, vararg actions: LaneAction) = LaneState(

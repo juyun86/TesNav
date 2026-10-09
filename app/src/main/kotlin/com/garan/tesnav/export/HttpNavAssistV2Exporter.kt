@@ -23,6 +23,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.google.gson.JsonParser
+
+internal fun confirmsNavigationSnapshot(body: String, response: String): Boolean = runCatching {
+    val sent = JsonParser.parseString(body).asJsonObject
+    val ack = JsonParser.parseString(response).asJsonObject
+    ack["accepted"]?.asBoolean == true && ack["sessionId"]?.asString == sent["sessionId"].asString &&
+        ack["sequence"]?.asLong == sent["sequence"].asLong
+}.getOrDefault(false)
 
 enum class NavAssistV2ConnectionStatus {
     UNCONFIGURED,
@@ -62,6 +70,9 @@ internal class OkHttpNavAssistV2Client : NavAssistV2HttpClient {
                     ?.groupValues
                     ?.getOrNull(1)
                 error("HTTP ${response.code}${reason?.let { " ($it)" } ?: ""}")
+            }
+            check(confirmsNavigationSnapshot(body, response.body?.string().orEmpty())) {
+                "HTTP response did not confirm the matching navigation snapshot"
             }
         }
     }
@@ -106,6 +117,8 @@ internal class HttpNavAssistV2Exporter(
     override val lastError: StateFlow<String?> = mutableLastError
     private val mutableStatus = MutableStateFlow(NavAssistV2ConnectionStatus.UNCONFIGURED)
     val status: StateFlow<NavAssistV2ConnectionStatus> = mutableStatus
+    private val mutableDeliveryState = MutableStateFlow(NavAssistDeliveryState())
+    val deliveryState: StateFlow<NavAssistDeliveryState> = mutableDeliveryState
     private val mutableResolvedEndpoint = MutableStateFlow<String?>(null)
     val resolvedEndpoint: StateFlow<String?> = mutableResolvedEndpoint
     private val mutableOemVehicleLaneState = MutableStateFlow(OemVehicleLaneState())
@@ -183,6 +196,12 @@ internal class HttpNavAssistV2Exporter(
                         if (!isActive || !running) return@serializedSend null
                         val ack = runCatching { udpClient.send(body, snapshot.sessionId, snapshot.sequence) }.getOrNull()
                         recordOwnerResponse(ack != null)
+                        publishIfRunning {
+                            mutableDeliveryState.value = NavAssistDeliveryState(
+                                snapshot.sessionId, snapshot.sequence, ack != null,
+                                monotonicMs().takeIf { ack != null }, ownerConfirmed, snapshot.routeActive,
+                            )
+                        }
                         Pair(snapshot, ack)
                     }
                     if (attempt != null) {
@@ -267,6 +286,7 @@ internal class HttpNavAssistV2Exporter(
             stopped = true
             running = false
             mutableLaneAnnouncement.value = null
+            mutableDeliveryState.value = NavAssistDeliveryState()
             completedAnnouncement = null
             rediscoveryRequested = false
             publisherJob?.cancel()
@@ -348,8 +368,8 @@ internal class HttpNavAssistV2Exporter(
         if (!running) return@serializedSend PostResult.NO_STATE
         val state = stateProvider() ?: return@serializedSend PostResult.NO_STATE
         if (!running) return@serializedSend PostResult.NO_STATE
+        val snapshot = session.nextSnapshot(stateForOwner(state), System.currentTimeMillis())
         runCatching {
-            val snapshot = session.nextSnapshot(stateForOwner(state), System.currentTimeMillis())
             val body = CanonicalJson.encode(snapshot)
             val bodyBytes = body.toByteArray(Charsets.UTF_8)
             val signature = identity.sign(
@@ -360,10 +380,18 @@ internal class HttpNavAssistV2Exporter(
             if (!running) return@serializedSend PostResult.NO_STATE
             httpClient.post(endpoint.url, body, identity.keyId, signature)
         }.fold(
-            onSuccess = { recordOwnerResponse(true); PostResult.SUCCESS },
+            onSuccess = {
+                recordOwnerResponse(true)
+                publishIfRunning {
+                    mutableDeliveryState.value = NavAssistDeliveryState(snapshot.sessionId, snapshot.sequence,
+                        true, monotonicMs(), ownerConfirmed, snapshot.routeActive)
+                }
+                PostResult.SUCCESS
+            },
             onFailure = { error ->
                 recordOwnerResponse(false)
                 publishIfRunning {
+                    mutableDeliveryState.value = NavAssistDeliveryState(snapshot.sessionId, snapshot.sequence)
                     mutableLastError.value = describeHttpFailure(endpoint.url, error)
                     mutableConnectionState.value = ExportConnectionState.ERROR
                     mutableStatus.value = NavAssistV2ConnectionStatus.ERROR

@@ -27,7 +27,7 @@ import kotlin.math.min
 internal const val NAVASSIST_UDP_RECEIVE_WINDOW_MS = 350L
 
 internal fun interface NavAssistV3UdpClient {
-    /** Broadcast one canonical v3 snapshot and return a matching ACK; UDP does not authenticate C3. */
+    /** Discover C3, then send directly; a matching UDP ACK does not authenticate C3. */
     fun send(body: ByteArray, sessionId: String, sequence: Long): NavAssistV3UdpAck?
 }
 
@@ -219,6 +219,28 @@ internal object NavAssistV3AckParser {
 }
 
 internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = null) : NavAssistV3UdpClient {
+    private var discoveredHost: InetAddress? = null
+    private var discoveredNetwork: String? = null
+    private var consecutiveFailures = 0
+
+    internal fun deliveryTargets(network: String, discover: () -> List<InetAddress>): List<InetAddress> {
+        if (network.isEmpty() || network != discoveredNetwork) {
+            discoveredHost = null
+            consecutiveFailures = 0
+            discoveredNetwork = network
+        }
+        return discoveredHost?.let { listOf(it) } ?: discover()
+    }
+
+    internal fun recordDelivery(ack: NavAssistV3UdpAck?) {
+        if (ack != null) {
+            discoveredHost = InetAddress.getByName(ack.host)
+            consecutiveFailures = 0
+        } else if (++consecutiveFailures >= 2) {
+            discoveredHost = null
+        }
+    }
+
     override fun send(body: ByteArray, sessionId: String, sequence: Long): NavAssistV3UdpAck? {
         require(body.isNotEmpty() && body.size <= MAX_SNAPSHOT_BYTES) { "UDP snapshot is too large" }
         val startNs = System.nanoTime()
@@ -231,13 +253,17 @@ internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = 
         }
         fun finish(ack: NavAssistV3UdpAck?, reason: String): NavAssistV3UdpAck? {
             outcome = "${if (ack == null) "missing" else "ack"}:$reason"
+            recordDelivery(ack)
             return ack
         }
         try {
             DatagramSocket().use { socket ->
                 localPort = socket.localPort
                 socket.broadcast = true
-                val sent = broadcastTargets().count { target ->
+                val targets = deliveryTargets(networkIdentity(), ::broadcastTargets)
+                val directHost = discoveredHost
+                mark("mode=${if (directHost == null) "discovery" else "direct"}")
+                val sent = targets.count { target ->
                     runCatching { socket.send(DatagramPacket(body, body.size, target, UDP_PORT)) }
                         .onSuccess { mark("send=${target.hostAddress}:ok") }
                         .onFailure { mark("send=${target.hostAddress}:${it.javaClass.simpleName}") }.isSuccess
@@ -263,6 +289,7 @@ internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = 
                     if (packet.length > NavAssistV3AckParser.MAX_ACK_BYTES) { mark("reject=oversize"); continue }
                     val source = packet.address as? Inet4Address ?: continue
                     if (source.isAnyLocalAddress || source.isLoopbackAddress || source.isMulticastAddress) continue
+                    if (directHost != null && source != directHost) { mark("reject=host"); continue }
                     val ack = NavAssistV3AckParser.parse(
                         packet.data.copyOfRange(packet.offset, packet.offset + packet.length),
                         source.hostAddress ?: continue, sessionId, sequence,
@@ -280,6 +307,7 @@ internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = 
                 }
             }
         } catch (error: Exception) {
+            recordDelivery(null)
             outcome = "error:${error.javaClass.simpleName}"
             throw error
         } finally {
@@ -289,6 +317,16 @@ internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = 
                 "result=$outcome events=$events") }
         }
     }
+
+    private fun networkIdentity(): String = runCatching {
+        Collections.list(NetworkInterface.getNetworkInterfaces())
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { network -> network.interfaceAddresses.mapNotNull { address ->
+                (address.address as? Inet4Address)?.let {
+                    "${network.name}:${it.hostAddress}/${address.networkPrefixLength}"
+                }
+            } }.sorted().joinToString("|")
+    }.getOrDefault("")
 
     private fun broadcastTargets(): List<InetAddress> {
         val targets = linkedSetOf<InetAddress>()

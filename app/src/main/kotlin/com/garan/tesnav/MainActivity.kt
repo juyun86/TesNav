@@ -45,6 +45,12 @@ import com.amap.api.maps.model.MyLocationStyle
 import com.amap.api.services.core.ServiceSettings
 import com.garan.tesnav.model.NavigationMode
 import com.garan.tesnav.model.NavigationState
+import com.garan.tesnav.model.NavigationManeuver
+import com.garan.tesnav.model.withDisplayExpiry
+import com.garan.tesnav.export.NavAssistV2Protocol
+import com.garan.tesnav.export.NAVASSIST_UDP_RECEIVE_WINDOW_MS
+import com.garan.tesnav.ui.LaneGuidanceView
+import com.garan.tesnav.ui.AmapAutoDisplayPresenter
 import com.garan.tesnav.search.AddressCandidate
 import com.garan.tesnav.search.AddressLookupController
 import com.garan.tesnav.search.AddressLookupView
@@ -55,8 +61,10 @@ import com.garan.tesnav.search.LocationFailure
 import com.garan.tesnav.search.selectLocationFailure
 import com.garan.tesnav.service.NavigationForegroundService
 import com.garan.tesnav.service.NavigationDataSource
+import com.garan.tesnav.service.NavigationSourcePolicy
 import com.garan.tesnav.ui.NavigationStateDialog
 import com.garan.tesnav.ui.NavigationSourceMenu
+import com.garan.tesnav.ui.AmapAutoActions
 import com.garan.tesnav.ui.SettingsDialog
 import com.garan.tesnav.config.AmapConfiguration
 import com.garan.tesnav.search.SearchHistory
@@ -67,6 +75,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -85,6 +94,11 @@ class MainActivity : Activity(), AddressLookupView {
     private lateinit var suggestionAdapter: ArrayAdapter<String>
     private lateinit var currentAddressText: TextView
     private lateinit var searchPanel: LinearLayout
+    private lateinit var autoNavigationSummary: TextView
+    private lateinit var autoLaneGuidance: LaneGuidanceView
+    private val feedbackDisplayBudgetMs = BuildConfig.NAV_ASSIST_V2_INTERVAL_MS
+        .coerceIn(NavAssistV2Protocol.MIN_INTERVAL_MS, Long.MAX_VALUE - NAVASSIST_UDP_RECEIVE_WINDOW_MS) +
+        NAVASSIST_UDP_RECEIVE_WINDOW_MS
     private lateinit var addressLookupController: AddressLookupController
     private lateinit var clearHistoryButton: Button
     private val history by lazy { SearchHistory.from(this) }
@@ -95,6 +109,7 @@ class MainActivity : Activity(), AddressLookupView {
     private var runtimeService: NavigationForegroundService? = null
     private var bindRequested = false
     private var stateJob: Job? = null
+    private var autoGuidanceExpiryJob: Job? = null
     private var sourceJob: Job? = null
     private var locationStatusJob: Job? = null
     private var suggestionJob: Job? = null
@@ -103,6 +118,8 @@ class MainActivity : Activity(), AddressLookupView {
     private var destination: LatLng? = null
     private var destinationMarker: Marker? = null
     private var navigationPageOpening = false
+    private var autoOpenedRouteRevision: Long? = null
+    private var autoLandscapePageOpened = false
     private var initialCameraPositioned = false
     private var mapState = MapState.FOLLOW
     private var lastMapInteractionAt = 0L
@@ -129,6 +146,9 @@ class MainActivity : Activity(), AddressLookupView {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        autoLandscapePageOpened = savedInstanceState?.getBoolean("autoLandscapePageOpened") == true &&
+            resources.configuration.screenWidthDp >= 600 &&
+            resources.configuration.screenWidthDp > resources.configuration.screenHeightDp
         if (!AmapConfiguration.prepare(applicationContext)) {
             startActivity(Intent(this, AmapKeyActivity::class.java))
             finish()
@@ -170,7 +190,9 @@ class MainActivity : Activity(), AddressLookupView {
         debugButton = floatingIconButton(R.drawable.ic_bug_report, "查看 NavigationState").apply {
             isEnabled = false
         }
-        sourceButton = actionButton(NavigationDataSource.AMAP_API.buttonText).apply { textSize = 14f }
+        sourceButton = actionButton(
+            NavigationSourcePolicy.buttonText(NavigationDataSource.AMAP_API, BuildConfig.EXTENDED_NAV_SOURCES),
+        ).apply { textSize = 14f }
         destinationInput = EditText(this).apply {
             hint = "输入目的地地址或地点"
             setSingleLine(true)
@@ -203,6 +225,15 @@ class MainActivity : Activity(), AddressLookupView {
             textSize = 14f
             setTextColor(Color.rgb(38, 50, 56))
         }
+        autoNavigationSummary = TextView(this).apply {
+            textSize = 18f
+            setTextColor(Color.rgb(0, 105, 92))
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            visibility = View.GONE
+            contentDescription = "高德车机导航摘要，点击查看导航详情"
+            setOnClickListener { openNavigationPage() }
+        }
+        autoLaneGuidance = LaneGuidanceView(this, feedbackDisplayBudgetMs)
         searchPanel = createSearchPanel()
     }
 
@@ -211,6 +242,8 @@ class MainActivity : Activity(), AddressLookupView {
         elevation = dp(10).toFloat()
         setPadding(dp(12), dp(10), dp(12), dp(10))
         background = roundedRect(Color.argb(242, 255, 255, 255), Color.rgb(207, 216, 220))
+        addView(autoNavigationSummary, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(autoLaneGuidance, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(currentAddressText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -324,10 +357,21 @@ class MainActivity : Activity(), AddressLookupView {
     private fun configureActions() {
         sourceButton.setOnClickListener {
             val service = runtimeService ?: return@setOnClickListener
-            NavigationSourceMenu.show(this, sourceButton, service.navigationDataSource.value) { source ->
-                service.selectNavigationDataSource(source)?.let(::toast) ?: run {
-                    if (source == NavigationDataSource.AMAP_AUTO) openNavigationPage()
+            if (BuildConfig.EXTENDED_NAV_SOURCES) {
+                NavigationSourceMenu.show(
+                    this,
+                    sourceButton,
+                    service.navigationDataSource.value,
+                    BuildConfig.EXTENDED_NAV_SOURCES,
+                ) { source ->
+                    service.selectNavigationDataSource(source)?.let(::toast) ?: run {
+                        if (source == NavigationDataSource.AMAP_AUTO) {
+                            openNavigationPage()
+                        }
+                    }
                 }
+            } else if (service.toggleAmapNavigationDataSource() == NavigationDataSource.AMAP_AUTO) {
+                openNavigationPage()
             }
         }
         planButton.setOnClickListener { destination?.let(::openNavigationPage) }
@@ -345,7 +389,7 @@ class MainActivity : Activity(), AddressLookupView {
             override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
 
             override fun afterTextChanged(value: Editable?) {
-                if (suppressTextChanges || currentState.navigationMode != NavigationMode.IDLE) return
+                if (suppressTextChanges || !canSearch()) return
                 clearDestination()
                 suggestionJob?.cancel()
                 val query = value?.toString().orEmpty()
@@ -394,7 +438,7 @@ class MainActivity : Activity(), AddressLookupView {
             android.app.AlertDialog.Builder(this).setTitle("${applicationInfo.loadLabel(packageManager)} 设置")
                 .setItems(arrayOf("高德 Key 与配置指南", "清空搜索历史", "连接与导航设置")) { _, index ->
                     when (index) {
-                        0 -> if (currentState.navigationMode == NavigationMode.IDLE) {
+                        0 -> if (runtimeService?.canEditAmapKey() == true) {
                             startActivity(Intent(this, AmapKeyActivity::class.java))
                         } else toast("请先结束当前导航再修改 Key")
                         1 -> confirmClearHistory()
@@ -405,13 +449,13 @@ class MainActivity : Activity(), AddressLookupView {
         }
         debugButton.setOnClickListener {
             runtimeService?.let { service ->
-                NavigationStateDialog(this, activityScope, service.stateStore.state).show()
+                NavigationStateDialog(this, activityScope, service).show()
             }
         }
     }
 
     private fun searchDestinationAddress(@Suppress("UNUSED_PARAMETER") ignored: View? = null) {
-        if (currentState.navigationMode != NavigationMode.IDLE) {
+        if (!canSearch()) {
             toast("请先结束当前导航")
             return
         }
@@ -450,7 +494,7 @@ class MainActivity : Activity(), AddressLookupView {
 
     override fun onDestinationFound(candidate: AddressCandidate) = withLiveUi {
         finishDestinationSearch()
-        if (currentState.navigationMode != NavigationMode.IDLE) {
+        if (!canSearch()) {
             onDestinationSearchFailed("当前导航已启动，请先结束导航")
             return@withLiveUi
         }
@@ -499,7 +543,7 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     private fun showRecentSearches() {
-        if (!destinationInput.text.isNullOrBlank() || currentState.navigationMode != NavigationMode.IDLE) return
+        if (!destinationInput.text.isNullOrBlank() || !canSearch()) return
         showingHistory = true
         historyRows = history.entries()
         suggestions = emptyList()
@@ -583,7 +627,7 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     private fun selectDestination(point: LatLng) {
-        if (currentState.navigationMode != NavigationMode.IDLE) {
+        if (!canSearch()) {
             toast("请先结束当前导航")
             return
         }
@@ -594,7 +638,22 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     private fun openNavigationPage(target: LatLng? = null) {
+        if (BuildConfig.EXTENDED_NAV_SOURCES &&
+            runtimeService?.navigationDataSource?.value == NavigationDataSource.AMAP_AUTO && target != null
+        ) {
+            if (runtimeService?.navigateAmapAutoDestination(destinationInput.text.toString(), target.latitude, target.longitude) == true) {
+                toast("目的地已发送，请在高德车机确认导航")
+            } else {
+                toast("未能打开高德车机，请确认已安装车机版")
+            }
+            return
+        }
         if (navigationPageOpening) return
+        if (BuildConfig.EXTENDED_NAV_SOURCES &&
+            runtimeService?.navigationDataSource?.value == NavigationDataSource.AMAP_AUTO &&
+            resources.configuration.screenWidthDp >= 600 &&
+            resources.configuration.screenWidthDp > resources.configuration.screenHeightDp
+        ) autoLandscapePageOpened = true
         navigationPageOpening = true
         startActivity(
             Intent(this, NavigationActivity::class.java).apply {
@@ -609,24 +668,100 @@ class MainActivity : Activity(), AddressLookupView {
     private fun observeRuntime(service: NavigationForegroundService) {
         cancelRuntimeObservation()
         stateJob = activityScope.launch {
-            service.stateStore.state.collect { state ->
+            combine(service.selectedNavigationStateFlow,
+                service.oemVehicleLaneState.withDisplayExpiry(feedbackDisplayBudgetMs, SystemClock::elapsedRealtime),
+                service.amapAutoBroadcasts,
+            ) { state, oem, broadcasts -> Triple(state, oem, broadcasts) }.collect { (state, oem, broadcasts) ->
+                if (state.navigationProvider != service.navigationDataSource.value.name) return@collect
                 currentState = state
-                if (state.navigationMode == NavigationMode.IDLE &&
+                autoGuidanceExpiryJob?.cancel()
+                val apiSelected = state.navigationProvider == NavigationDataSource.AMAP_API.name
+                val autoSelected = BuildConfig.EXTENDED_NAV_SOURCES &&
+                    state.navigationProvider == NavigationDataSource.AMAP_AUTO.name
+                if (!autoSelected || !state.routePlanned) autoOpenedRouteRevision = null
+                if (!autoSelected) autoLandscapePageOpened = false
+                autoNavigationSummary.visibility = if (autoSelected) View.VISIBLE else View.GONE
+                if (autoSelected) {
+                    val fresh = state.guidanceReceivedElapsedMs?.let { SystemClock.elapsedRealtime() - it in 0..3_000 } == true
+                    autoNavigationSummary.text = if (state.routePlanned && fresh)
+                        "车机导航进行中 · 点击打开导航地图" else autoNavigationSummaryText(state)
+                    if (state.routePlanned && fresh) autoLaneGuidance.render(state, oem)
+                    else autoLaneGuidance.visibility = View.GONE
+                    state.guidanceReceivedElapsedMs?.takeIf { state.routePlanned && fresh }?.let { observed ->
+                        autoGuidanceExpiryJob = activityScope.launch {
+                            delay((3_001L - (SystemClock.elapsedRealtime() - observed)).coerceAtLeast(1L))
+                            autoNavigationSummary.text = autoNavigationSummaryText(state)
+                            autoLaneGuidance.visibility = View.GONE
+                        }
+                    }
+                } else {
+                    autoLaneGuidance.visibility = View.GONE
+                }
+                if (apiSelected && state.navigationMode == NavigationMode.IDLE &&
                     previousMode != null && previousMode != NavigationMode.IDLE
                 ) {
                     clearDestination()
-                } else if (!navigationPageOpening) {
+                } else if (apiSelected && !navigationPageOpening) {
                     if (state.navigationMode != NavigationMode.IDLE) openNavigationPage()
+                } else if (autoSelected && !navigationPageOpening && !autoLandscapePageOpened &&
+                    resources.configuration.screenWidthDp >= 600 &&
+                    resources.configuration.screenWidthDp > resources.configuration.screenHeightDp) {
+                    if (state.routePlanned) autoOpenedRouteRevision = state.routeRevision
+                    openNavigationPage()
+                } else if (autoSelected && !navigationPageOpening && state.routePlanned &&
+                    autoOpenedRouteRevision != state.routeRevision &&
+                    state.guidanceReceivedElapsedMs?.let { SystemClock.elapsedRealtime() - it in 0..3_000 } == true) {
+                    autoOpenedRouteRevision = state.routeRevision
+                    openNavigationPage()
                 }
                 previousMode = state.navigationMode
             }
         }
         sourceJob = activityScope.launch {
             service.navigationDataSource.collect { source ->
-                sourceButton.text = source.buttonText
+                sourceButton.text = NavigationSourcePolicy.buttonText(source, BuildConfig.EXTENDED_NAV_SOURCES)
+                if (BuildConfig.EXTENDED_NAV_SOURCES) {
+                    planButton.text = if (source == NavigationDataSource.AMAP_AUTO) "发送到高德车机" else "导航到这里"
+                }
             }
         }
     }
+
+    private fun autoNavigationSummaryText(state: NavigationState): String {
+        if (!state.routePlanned || state.navigationMode == NavigationMode.IDLE) return "高德车机 · 等待导航"
+        val fresh = state.guidanceReceivedElapsedMs?.let { SystemClock.elapsedRealtime() - it in 0..3_000 } == true
+        if (!fresh) return "高德车机 · 导航数据已过期，等待更新"
+        val action = when (state.maneuver) {
+            NavigationManeuver.TURN_LEFT, NavigationManeuver.SHARP_LEFT -> "左转"
+            NavigationManeuver.TURN_RIGHT, NavigationManeuver.SHARP_RIGHT -> "右转"
+            NavigationManeuver.SLIGHT_LEFT, NavigationManeuver.KEEP_LEFT, NavigationManeuver.MERGE_LEFT -> "靠左行驶"
+            NavigationManeuver.SLIGHT_RIGHT, NavigationManeuver.KEEP_RIGHT, NavigationManeuver.MERGE_RIGHT -> "靠右行驶"
+            NavigationManeuver.EXIT_LEFT, NavigationManeuver.RAMP_LEFT -> "左侧匝道"
+            NavigationManeuver.EXIT_RIGHT, NavigationManeuver.RAMP_RIGHT -> "右侧匝道"
+            NavigationManeuver.U_TURN_LEFT, NavigationManeuver.U_TURN_RIGHT -> "掉头"
+            NavigationManeuver.STRAIGHT -> "直行"
+            NavigationManeuver.ROUNDABOUT -> "进入环岛"
+            NavigationManeuver.DESTINATION -> "到达目的地"
+            else -> "按导航行驶"
+        }
+        val next = listOfNotNull(state.nextTurnDistanceMeters?.let { "$it 米后" }, action,
+            state.nextRoad?.takeIf(String::isNotBlank)).joinToString(" · ")
+        val trip = listOfNotNull(state.routeRemainDistanceMeters?.let {
+            if (it >= 1000) String.format(Locale.CHINA, "剩余 %.1f 公里", it / 1000.0) else "剩余 $it 米"
+        }, state.routeRemainTimeSeconds?.let { "约 ${(it.toLong() + 59) / 60} 分钟" }).joinToString(" · ")
+        val light = state.trafficLight?.takeIf { System.currentTimeMillis() - it.observedAtMs in 0..3_000 }?.let {
+            val color = when (it.status) { 2 -> "红灯"; 3 -> "绿灯"; 4 -> "黄灯"; else -> "信号灯" }
+            val direction = when (it.direction) { 1 -> "左转"; 2 -> "右转"; 3 -> "掉头"; 4 -> "直行"; else -> "方向未知" }
+            val elapsedSeconds = ((System.currentTimeMillis() - it.observedAtMs) / 1000L).toInt()
+            "$direction · $color${it.countdownSeconds?.let { seconds -> " ${maxOf(0, seconds - elapsedSeconds)} 秒" }.orEmpty()}"
+        } ?: "红绿灯：暂无有效数据"
+        return listOfNotNull("高德车机 · 导航中", state.currentRoad?.takeIf(String::isNotBlank), next,
+            trip.takeIf(String::isNotBlank), light).joinToString("\n")
+    }
+
+    private fun canSearch(): Boolean = runtimeService?.let { service ->
+        NavigationSourcePolicy.canSearch(service.navigationDataSource.value, service.stateStore.state.value.navigationMode)
+    } ?: (currentState.navigationMode == NavigationMode.IDLE)
 
     private fun clearDestination() {
         destination = null
@@ -662,6 +797,8 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     private fun cancelRuntimeObservation() {
+        autoGuidanceExpiryJob?.cancel()
+        autoGuidanceExpiryJob = null
         stateJob?.cancel()
         stateJob = null
         sourceJob?.cancel()
@@ -739,6 +876,7 @@ class MainActivity : Activity(), AddressLookupView {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("autoLandscapePageOpened", autoLandscapePageOpened)
         if (::mapView.isInitialized) mapView.onSaveInstanceState(outState)
         super.onSaveInstanceState(outState)
     }

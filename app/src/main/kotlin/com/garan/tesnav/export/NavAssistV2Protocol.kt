@@ -124,14 +124,22 @@ data class NavAssistV2Lane(
 
 /** Owns the session UUID and sequence; the navigation service retains it across exporter rebuilds. */
 class NavAssistV2Session(
-    val sessionId: String = UUID.randomUUID().toString(),
+    sessionId: String = UUID.randomUUID().toString(),
     private val validForMs: Long = NavAssistV2Protocol.DEFAULT_VALID_FOR_MS,
 ) {
+    @Volatile var sessionId: String = sessionId
+        private set
     private val sequence = AtomicLong(0L)
     private val sendLock = Any()
 
     // Shared across exporter instances: an old in-flight send must finish before a replacement sends.
     internal fun <T> serializedSend(block: () -> T): T = synchronized(sendLock, block)
+
+    // Keep the shared send lock: stopped exporters must drain before the new owner starts.
+    internal fun switchSource() = serializedSend {
+        sessionId = UUID.randomUUID().toString()
+        sequence.set(0L)
+    }
 
     init {
         require(sessionId.isNotBlank()) { "sessionId must not be blank" }
@@ -219,10 +227,19 @@ object NavAssistV2Mapper {
             location != null &&
             guidance != null
         val stepIndex = state.guidanceStepIndex ?: state.currentStepIndex
+        // Lane selection is an action even when the SDK has no turn icon. Only
+        // route-bound exported lane facts may provide this stable step identity.
+        val routeLanes = if (state.lanesPathId != null && state.lanesPathId == state.acceptedPathId &&
+            state.guidancePathId == state.acceptedPathId && !state.routeRecalculating) lanes(state) else null
+        val eventAction = when {
+            maneuver != "none" && maneuver != "unknown" -> maneuver
+            maneuver == "none" && routeLanes?.items?.any { it.recommended || it.routeAvoid } == true -> "lane_guidance"
+            else -> null
+        }
         val maneuverEventId = if (
-            routeActive && stepIndex != null && maneuver != "none" && maneuver != "unknown"
+            routeActive && stepIndex != null && eventAction != null
         ) {
-            StableManeuverEventId.fromKey("$sessionId:${state.routeRevision}:$stepIndex:$maneuver")
+            StableManeuverEventId.fromKey("$sessionId:${state.routeRevision}:$stepIndex:$eventAction")
         } else {
             0L
         }
@@ -246,8 +263,7 @@ object NavAssistV2Mapper {
             guidance = guidance,
             // Only lane callbacks observed after keyed guidance confirmed the
             // currently installed path can become C3 route facts.
-            lanes = if (state.lanesPathId != null && state.lanesPathId == state.acceptedPathId &&
-                state.guidancePathId == state.acceptedPathId && !state.routeRecalculating) lanes(state) else null,
+            lanes = routeLanes,
         )
     }
 

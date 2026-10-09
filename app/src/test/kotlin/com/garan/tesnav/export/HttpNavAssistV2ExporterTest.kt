@@ -21,6 +21,15 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class HttpNavAssistV2ExporterTest {
+    @Test fun `HTTP reception evidence requires acceptance and matching session and sequence`() {
+        val body = """{"sessionId":"current","sequence":12}"""
+        assertTrue(confirmsNavigationSnapshot(body, """{"accepted":true,"sessionId":"current","sequence":12}"""))
+        for (reply in listOf("", "{}", """{"accepted":false,"sessionId":"current","sequence":12}""",
+            """{"accepted":true,"sessionId":"old","sequence":12}""",
+            """{"accepted":true,"sessionId":"current","sequence":11}""")) {
+            assertFalse(confirmsNavigationSnapshot(body, reply))
+        }
+    }
     @Test fun `speech receipt is sent only after exact completion and is cleared on stop`() {
         val sent = LinkedBlockingQueue<NavAssistV2Snapshot>()
         val session = NavAssistV2Session()

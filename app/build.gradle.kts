@@ -27,6 +27,7 @@ android {
         manifestPlaceholders["AMAP_API_KEY"] =
             providers.gradleProperty("AMAP_API_KEY").orNull ?: ""
         manifestPlaceholders["APP_NAME"] = "TesNav"
+        buildConfigField("boolean", "EXTENDED_NAV_SOURCES", "false")
         buildConfigField("boolean", "EXPORT_ENABLED", providers.gradleProperty("EXPORT_ENABLED").orNull ?: "true")
         buildConfigField("String", "WEBSOCKET_URL", "\"${providers.gradleProperty("WEBSOCKET_URL").orNull ?: "ws://192.168.53.232:7766/amap-navigation"}\"")
         buildConfigField("String", "API_TOKEN", "\"${providers.gradleProperty("API_TOKEN").orNull ?: ""}\"")
@@ -56,6 +57,7 @@ android {
             initWith(getByName("debug"))
             applicationIdSuffix = ".tenengkai"
             matchingFallbacks += listOf("debug")
+            buildConfigField("boolean", "EXTENDED_NAV_SOURCES", "true")
             manifestPlaceholders["APP_NAME"] = "特会开"
             manifestPlaceholders["AMAP_API_KEY"] =
                 providers.gradleProperty("TENENGKAI_AMAP_API_KEY").orNull
@@ -78,7 +80,16 @@ android {
     }
 }
 
+androidComponents.beforeVariants(androidComponents.selector().withBuildType("tenengkai")) {
+    // Launching activities on a secondary display requires Android 8+.
+    // Original TesNav retains Android 6 support.
+    it.minSdk = 26
+}
+
 dependencies {
+    add("tenengkaiImplementation", "dev.rikka.shizuku:api:13.1.5")
+    add("tenengkaiImplementation", "dev.rikka.shizuku:provider:13.1.5")
+    add("tenengkaiImplementation", "org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
     implementation(libs.amap.navi)
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)

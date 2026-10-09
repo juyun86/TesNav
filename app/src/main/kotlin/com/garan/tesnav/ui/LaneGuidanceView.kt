@@ -53,9 +53,27 @@ class LaneGuidanceView(context: Context, private val feedbackDisplayBudgetMs: Lo
         addView(telemetry, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
+    /** Keep multiline status readable in the narrow landscape instrument panel. */
+    fun fitToPanel() {
+        listOf(title, currentLaneStatus, telemetry).forEach {
+            it.layoutParams = LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val rowIndex = indexOfChild(laneRow)
+        val rowParams = laneRow.layoutParams
+        removeView(laneRow)
+        addView(android.widget.HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = true
+            addView(laneRow, android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+        }, rowIndex, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = (rowParams as LayoutParams).topMargin
+        })
+    }
+
     fun render(state: NavigationState, oem: OemVehicleLaneState = OemVehicleLaneState()) {
         val displayed = oem.forDisplay(SystemClock.elapsedRealtime(), feedbackDisplayBudgetMs)
-        val presentation = LaneGuidancePresenter.present(state, displayed)
+        val presentation = LaneGuidancePresenter.present(state, displayed, System.currentTimeMillis())
         telemetry.text = displayed.navigationTelemetry?.displayText().orEmpty()
         telemetry.visibility = if (telemetry.text.isEmpty()) View.GONE else View.VISIBLE
         title.visibility = if (presentation == null) View.GONE else View.VISIBLE

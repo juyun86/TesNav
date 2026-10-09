@@ -13,7 +13,11 @@ import com.garan.tesnav.data.NavigationRepository
 import com.garan.tesnav.model.*
 
 /** Independent phone recovery probe; injected SDK output can never populate this listener. */
-internal class NavigationLocationBridge(context: Context, private val repository: NavigationRepository) {
+internal class NavigationLocationBridge(
+    context: Context,
+    private val repository: NavigationRepository,
+    private val onPlanningLocationChanged: () -> Unit = {},
+) {
     private val traceDirectory = context.applicationContext.filesDir
     private val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val coordinateConverter = CoordinateConverter(context.applicationContext)
@@ -46,12 +50,14 @@ internal class NavigationLocationBridge(context: Context, private val repository
             planningPhone = planningFix
             repository.updatePlanningLocation(planningFix)
             if (location.hasSpeed() && location.hasBearing()) rawPhone = fix
+            onPlanningLocationChanged()
         }
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) {
             rawPhone = null
             planningPhone = null
             repository.updatePlanningLocation(null)
+            onPlanningLocationChanged()
         }
         @Deprecated("Legacy callback")
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
