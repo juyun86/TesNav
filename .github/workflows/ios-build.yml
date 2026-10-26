@@ -1,0 +1,55 @@
+name: iOS unsigned build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [amap-lane-engine-20261013]
+    paths: ['ios/**', '.github/workflows/ios-build.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          pod install --deployment
+      - name: Build device application without signing
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace TesNavIOS.xcworkspace -scheme TesNavIOS \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' build | tee build.log
+      - name: Package unsigned IPA
+        working-directory: ios
+        run: |
+          mkdir -p output/Payload
+          ditto DerivedData/Build/Products/Release-iphoneos/TesNavIOS.app output/Payload/TesNavIOS.app
+          cd output
+          zip -qry TesNav-iOS-unsigned.ipa Payload
+          shasum -a 256 TesNav-iOS-unsigned.ipa > SHA256SUMS.txt
+          printf 'Source: %s\nUnsigned device build; signing is required before iPhone installation.\nExisting iOS client only; Android AR integration is not ported.\n' "$GITHUB_SHA" > BUILD-INFO.txt
+          unzip -tq TesNav-iOS-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TesNav-iOS-unsigned
+          path: |
+            ios/output/*.ipa
+            ios/output/SHA256SUMS.txt
+            ios/output/BUILD-INFO.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iOS-build-log
+          path: ios/build.log
+          if-no-files-found: ignore
