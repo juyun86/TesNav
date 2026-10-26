@@ -10,7 +10,7 @@ import com.garan.tesnav.model.NavigationState
 import java.util.Locale
 
 /** Guidance graphics from the selected car-navigation feed, never a second SDK route. */
-class AutoNavigationGuidanceView(context: Context) : View(context) {
+class AutoNavigationGuidanceView(context: Context, private val compact: Boolean = false) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var state = NavigationState()
     private var fresh = false
@@ -19,9 +19,10 @@ class AutoNavigationGuidanceView(context: Context) : View(context) {
     }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val d = resources.displayMetrics.density
+        val d = resources.displayMetrics.density * if (compact) .84f else 1f
         canvas.save(); canvas.scale(d, d)
-        paint.color = Color.rgb(18, 103, 71); paint.style = Paint.Style.FILL
+        paint.color = if (compact) Color.argb(235, 14, 39, 42) else Color.rgb(18, 103, 71)
+        paint.style = Paint.Style.FILL
         canvas.drawRoundRect(0f, 0f, width / d, height / d, 16f, 16f, paint)
         paint.color = Color.WHITE
         val direction = state.maneuver.name

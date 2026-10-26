@@ -7,6 +7,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NavAssistV3AckParserTest {
+    @Test fun `optional model route receipt permits cache miss and preserves legacy ACK`() {
+        val base = """{"messageType":"navassist_udp_ack","schemaVersion":3,"sessionId":"s","sequence":1"""
+        fun parseReceipt(suffix: String) = NavAssistV3AckParser.parse((base + suffix).toByteArray(), "host", "s", 1L, 1L, 1L)
+        assertEquals(null, parseReceipt("}")!!.modelRouteRevision)
+        assertEquals(-1L, parseReceipt(",\"modelRouteRevision\":-1}")!!.modelRouteRevision)
+        assertEquals(7L, parseReceipt(",\"modelRouteRevision\":7}")!!.modelRouteRevision)
+        assertNull(parseReceipt(",\"modelRouteRevision\":-2}"))
+    }
     @Test fun `lane decision is session bound and cannot corrupt vehicle feedback`() {
         val base = JsonParser.parseString(fixture().decodeToString()).asJsonObject
         val decision = """{"sessionId":"$session","reason":"efficiencySafetyBlocked","signalRequested":false,"direction":"none"}"""

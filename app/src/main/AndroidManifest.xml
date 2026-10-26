@@ -47,6 +47,9 @@
         <activity
             android:name=".NavigationActivity"
             android:exported="false" />
+        <activity
+            android:name=".ui.NavigationMapPreviewActivity"
+            android:exported="false" />
 
         <service
             android:name=".service.NavigationForegroundService"

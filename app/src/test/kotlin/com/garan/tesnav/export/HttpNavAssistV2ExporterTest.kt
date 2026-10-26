@@ -21,6 +21,74 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class HttpNavAssistV2ExporterTest {
+    @Test fun `cache receipt suppresses full route upload and cache loss requests retransmission`() {
+        val now = java.util.concurrent.atomic.AtomicLong(0L)
+        val cached = java.util.concurrent.atomic.AtomicLong(-1L)
+        val uploads = LinkedBlockingQueue<String>()
+        val snapshots = LinkedBlockingQueue<Long>()
+        val exporter = HttpNavAssistV2Exporter(
+            config = NavAssistV2ExportConfig(baseUrl = ""), stateProvider = { activeState() }, identity = identity,
+            endpointDiscovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.NotFound },
+            pinnedDeviceProvider = { null }, useUnauthenticatedUdp = true, monotonicMs = now::get,
+            modelRouteProvider = { NavAssistModelRoute(42L, 7L, listOf(com.garan.tesnav.model.GeoPoint(31.2, 121.4),
+                com.garan.tesnav.model.GeoPoint(31.201, 121.401))) },
+            udpClient = NavAssistV3UdpClient { _, _, sequence ->
+                snapshots.put(sequence)
+                NavAssistV3UdpAck("192.168.8.101", null, modelRouteRevision = cached.get())
+            },
+            httpClient = object : NavAssistV2HttpClient {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
+                    cached.set(7L)
+                    uploads.put(body)
+                }
+                override fun close() = Unit
+            },
+        )
+        try {
+            exporter.start()
+            assertTrue(uploads.poll(3, TimeUnit.SECONDS) != null)
+            now.set(6_000L)
+            snapshots.clear()
+            repeat(3) { assertTrue(snapshots.poll(2, TimeUnit.SECONDS) != null) }
+            assertTrue(uploads.isEmpty())
+            cached.set(-1L)
+            assertTrue(uploads.poll(3, TimeUnit.SECONDS) != null)
+        } finally { exporter.stop() }
+    }
+    @Test fun `slow route upload leaves UDP snapshots flowing and uses the acknowledged host`() {
+        val sent = LinkedBlockingQueue<Long>()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val bodies = LinkedBlockingQueue<String>()
+        val route = NavAssistModelRoute(42L, 7L, listOf(com.garan.tesnav.model.GeoPoint(31.2, 121.4),
+            com.garan.tesnav.model.GeoPoint(31.201, 121.401)))
+        val exporter = HttpNavAssistV2Exporter(
+            config = NavAssistV2ExportConfig(baseUrl = ""), stateProvider = { activeState() }, identity = identity,
+            endpointDiscovery = NavAssistV2EndpointDiscovery { NavAssistV2DiscoveryResult.NotFound },
+            pinnedDeviceProvider = { null }, useUnauthenticatedUdp = true, modelRouteProvider = { route },
+            udpClient = NavAssistV3UdpClient { _, _, sequence -> sent.put(sequence); NavAssistV3UdpAck("192.168.8.101", null) },
+            httpClient = object : NavAssistV2HttpClient {
+                override fun post(endpoint: HttpUrl, body: String, appKeyId: String, signature: String) {
+                    assertEquals("192.168.8.101", endpoint.host)
+                    assertEquals(NavAssistModelRoute.PATH, endpoint.encodedPath)
+                    assertEquals("", appKeyId)
+                    assertEquals("", signature)
+                    bodies.put(body)
+                    started.countDown()
+                    assertTrue(release.await(3, TimeUnit.SECONDS))
+                }
+                override fun close() = Unit
+            },
+        )
+        try {
+            exporter.start()
+            assertTrue(started.await(3, TimeUnit.SECONDS))
+            assertNotEquals(sent.poll(2, TimeUnit.SECONDS), sent.poll(2, TimeUnit.SECONDS))
+            val body = com.google.gson.JsonParser.parseString(bodies.poll(2, TimeUnit.SECONDS)!!).asJsonObject
+            assertEquals(7L, body["routeRevision"].asLong)
+            assertEquals(2, body["points"].asJsonArray.size())
+        } finally { release.countDown(); exporter.stop() }
+    }
     @Test fun `HTTP reception evidence requires acceptance and matching session and sequence`() {
         val body = """{"sessionId":"current","sequence":12}"""
         assertTrue(confirmsNavigationSnapshot(body, """{"accepted":true,"sessionId":"current","sequence":12}"""))

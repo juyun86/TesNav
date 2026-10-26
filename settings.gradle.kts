@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "TesNav"
 include(":app")
+include(":arcompat")

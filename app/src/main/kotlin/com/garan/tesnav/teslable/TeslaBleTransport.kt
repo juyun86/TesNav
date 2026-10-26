@@ -12,7 +12,8 @@ import java.util.UUID
 /** One GATT connection; all operations are serialized by the client's single coroutine. */
 @SuppressLint("MissingPermission")
 internal class TeslaBleTransport(private val context: Context) {
-    private val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    private val adapter = manager.adapter
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var closed = false
     private var write: BluetoothGattCharacteristic? = null
@@ -70,32 +71,32 @@ internal class TeslaBleTransport(private val context: Context) {
             pending = pending.copyOfRange(size + 2, pending.size)
         }
     }
-    suspend fun connect(vin: String) {
+    private fun connectedVehicle(name: String): BluetoothDevice? =
+        manager.getConnectedDevices(BluetoothProfile.GATT).firstOrNull { it.name == name }
+
+    suspend fun connect(vin: String, onStage: (String) -> Unit = {}) {
         require(adapter?.isEnabled == true) { "请先开启手机蓝牙" }
-        val scanner = adapter.bluetoothLeScanner ?: error("无法使用蓝牙扫描")
-        val device = CompletableDeferred<BluetoothDevice>()
         val name = TeslaNavigationProtocol.localName(vin)
-        val scan = object : ScanCallback() {
-            override fun onScanResult(type: Int, result: ScanResult) {
-                if (result.scanRecord?.deviceName == name) device.complete(result.device)
-            }
-            override fun onScanFailed(code: Int) { device.completeExceptionally(IllegalStateException("蓝牙扫描失败 ($code)")) }
-        }
-        scanCallback = scan
-        val target = try {
-            scanner.startScan(listOf(ScanFilter.Builder().setDeviceName(name).build()),
-                ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scan)
-            withTimeout(20000) { device.await() }
-        } finally { scanner.stopScan(scan); scanCallback = null }
+        onStage("正在查找已连接的原车蓝牙")
+        val target = connectedVehicle(name) ?: scanVehicle(name, onStage)
+        onStage("正在建立原车蓝牙连接")
         gatt = target.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE) ?: error("蓝牙连接失败")
         withTimeout(15000) { connected.await() }
         val g = checkNotNull(gatt)
+        onStage("正在发现原车蓝牙服务")
         check(g.discoverServices()) { "无法发现蓝牙服务" }
         withTimeout(10000) { discovered.await() }
-        if (g.requestMtu(512)) withTimeout(10000) { negotiated.await() }
+        onStage("正在协商蓝牙传输大小")
+        // Android may report the existing link MTU immediately after attaching this client.
+        // Do not renegotiate that link or reuse an earlier callback to release a new request.
+        if (mtu == 23) {
+            negotiated = CompletableDeferred()
+            if (g.requestMtu(512)) withTimeout(10000) { negotiated.await() }
+        }
         val service = g.getService(UUID.fromString("00000211-b2d1-43f0-9b88-960cebf8b91e")) ?: error("车辆缺少 Tesla BLE 服务")
         write = service.getCharacteristic(UUID.fromString("00000212-b2d1-43f0-9b88-960cebf8b91e")) ?: error("缺少查询特征")
         val read = service.getCharacteristic(UUID.fromString("00000213-b2d1-43f0-9b88-960cebf8b91e")) ?: error("缺少回执特征")
+        onStage("正在开启原车蓝牙回执")
         check(g.setCharacteristicNotification(read, true))
         val descriptor = read.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")) ?: error("缺少通知描述符")
         require(read.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0)
@@ -105,6 +106,23 @@ internal class TeslaBleTransport(private val context: Context) {
         @Suppress("DEPRECATION")
         check(g.writeDescriptor(descriptor))
         withTimeout(10000) { subscribed.await() }
+    }
+    private suspend fun scanVehicle(name: String, onStage: (String) -> Unit): BluetoothDevice {
+        onStage("正在扫描原车蓝牙，尚未发送配钥请求")
+        val scanner = adapter?.bluetoothLeScanner ?: error("无法使用蓝牙扫描")
+        val device = CompletableDeferred<BluetoothDevice>()
+        val scan = object : ScanCallback() {
+            override fun onScanResult(type: Int, result: ScanResult) {
+                if (result.scanRecord?.deviceName == name) device.complete(result.device)
+            }
+            override fun onScanFailed(code: Int) { device.completeExceptionally(IllegalStateException("蓝牙扫描失败 ($code)")) }
+        }
+        scanCallback = scan
+        return try {
+            scanner.startScan(listOf(ScanFilter.Builder().setDeviceName(name).build()),
+                ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scan)
+            withTimeout(20000) { device.await() }
+        } finally { scanner.stopScan(scan); scanCallback = null }
     }
     suspend fun send(payload: ByteArray) {
         require(payload.size in 1..65535)

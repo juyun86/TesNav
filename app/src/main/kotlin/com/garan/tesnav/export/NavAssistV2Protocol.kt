@@ -377,7 +377,10 @@ object CanonicalJson {
         element.isJsonObject -> JsonObject().apply {
             element.asJsonObject.entrySet()
                 .sortedBy { it.key }
-                .forEach { (key, value) -> add(key, sort(value)) }
+                .forEach { (key, value) ->
+                    // Older C3 receivers omit this optional false default.
+                    if (key != "routeAvoid" || value != com.google.gson.JsonPrimitive(false)) add(key, sort(value))
+                }
         }
         element.isJsonArray -> JsonArray().apply {
             element.asJsonArray.forEach { add(sort(it)) }

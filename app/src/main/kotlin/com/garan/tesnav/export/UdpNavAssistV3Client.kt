@@ -33,13 +33,14 @@ internal fun interface NavAssistV3UdpClient {
 
 data class LaneAnnouncement(val id: String, val sessionId: String, val direction: String, val receivedAtElapsedMs: Long)
 
-internal data class NavAssistV3UdpAck(val host: String, val vehicleLane: OemVehicleLaneState?, val announcement: LaneAnnouncement? = null)
+internal data class NavAssistV3UdpAck(val host: String, val vehicleLane: OemVehicleLaneState?, val announcement: LaneAnnouncement? = null,
+    val modelRouteRevision: Long? = null)
 
 /** Reads the existing ACK and flat feedback shape; malformed packets never escape the receive loop. */
 internal object NavAssistV3AckParser {
     const val MAX_ACK_BYTES = 2 * 1024
     private val REQUIRED_ACK_KEYS = setOf("messageType", "schemaVersion", "sessionId", "sequence")
-    private val ALLOWED_ACK_KEYS = REQUIRED_ACK_KEYS + setOf("vehicleLane", "vehicleTelemetry", "laneAnnouncement", "laneDecision")
+    private val ALLOWED_ACK_KEYS = REQUIRED_ACK_KEYS + setOf("vehicleLane", "vehicleTelemetry", "laneAnnouncement", "laneDecision", "modelRouteRevision")
     private val TELEMETRY_KEYS = setOf(
         "gpsStatus", "latitude", "longitude", "accuracyValue", "hdop", "headingDeg", "speedValue",
         "mapAvailable", "controllerHealth", "alcState", "forkState", "abortReason", "navAvailable",
@@ -125,7 +126,8 @@ internal object NavAssistV3AckParser {
         }.getOrNull()
         NavAssistV3UdpAck(host, if (telemetry == null && decision == null) feedback else
             (feedback ?: OemVehicleLaneState(receivedAtMs = receivedAtMs, receivedAtElapsedMs = receivedAtElapsedMs))
-                .copy(navigationTelemetry = telemetry, c3LaneDecision = decision), announcement)
+                .copy(navigationTelemetry = telemetry, c3LaneDecision = decision), announcement,
+            if (ack.has("modelRouteRevision")) integer(ack, "modelRouteRevision", -1L..Long.MAX_VALUE) else null)
     }.getOrNull()
 
     private fun readObject(reader: JsonReader, allowFeedback: Boolean = false): JsonObject {
@@ -299,8 +301,8 @@ internal class JvmUdpNavAssistV3Client(private val trace: ((String) -> Unit)? = 
                     if (legacyAck != null && ack.host != legacyAck.host) { mark("reject=host"); continue }
                     mark("accepted=${ack.host}")
                     if (ack.announcement != null) return finish(ack, "announcement")
-                    if (legacyAck == null || ack.vehicleLane?.navigationTelemetry != null) {
-                        legacyAck = ack
+                    if (legacyAck == null || ack.vehicleLane?.navigationTelemetry != null || ack.modelRouteRevision != null) {
+                        legacyAck = ack.copy(modelRouteRevision = ack.modelRouteRevision ?: legacyAck?.modelRouteRevision)
                         // Bound a short grace window for UDP reordering; old C3 remains compatible.
                         deadlineNs = minOf(deadlineNs, System.nanoTime() + 30 * NANOS_PER_MILLISECOND)
                     }

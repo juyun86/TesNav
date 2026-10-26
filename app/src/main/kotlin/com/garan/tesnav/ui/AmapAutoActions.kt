@@ -96,3 +96,18 @@ internal object AmapAutoActions {
         return true
     }
 }
+
+/** Queued work and late results belong only to the live foreground display. */
+internal fun embeddedTaskCurrent(token: Int, generation: Int, active: Boolean, attached: Boolean, disposed: Boolean): Boolean =
+    token == generation && active && attached && !disposed
+
+internal data class EmbeddedDisplayViewport(val left: Float, val top: Float, val scale: Float,
+    val width: Float, val height: Float)
+
+/** One uniform transform for displayed pixels and their inverse touch coordinates. */
+internal fun embeddedDisplayViewport(width: Int, height: Int, displayWidth: Int, displayHeight: Int): EmbeddedDisplayViewport? {
+    if (minOf(width, height, displayWidth, displayHeight) <= 0) return null
+    val scale = minOf(width.toFloat()/displayWidth, height.toFloat()/displayHeight)
+    val w = displayWidth*scale; val h = displayHeight*scale
+    return EmbeddedDisplayViewport((width-w)/2, (height-h)/2, scale, w, h)
+}

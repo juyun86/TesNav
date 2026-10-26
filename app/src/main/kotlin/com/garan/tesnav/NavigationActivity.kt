@@ -103,6 +103,8 @@ class NavigationActivity : Activity() {
     private var splitRightBlindspotView: TextView? = null
     private var splitMapPane: FrameLayout? = null
     private var embeddedAmapView: EmbeddedAmapView? = null
+    private var arOpenButton: Button? = null
+    private var arAutoOpened = false
     private var foreground = false
     private val splitLayout: Boolean
         get() = BuildConfig.EXTENDED_NAV_SOURCES &&
@@ -152,6 +154,7 @@ class NavigationActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        arAutoOpened = savedInstanceState?.getBoolean("arAutoOpened") ?: false
         if (!AmapConfiguration.prepare(applicationContext)) {
             startActivity(Intent(this, AmapKeyActivity::class.java))
             finish()
@@ -300,7 +303,7 @@ class NavigationActivity : Activity() {
     private fun createSplitLayout(): LinearLayout {
         val sidebar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(18, 23, 29))
+            setBackgroundColor(Color.rgb(10, 11, 12))
             setPadding(dp(16), dp(10), dp(16), dp(10))
         }
         val compact = resources.configuration.screenHeightDp <= 420
@@ -332,30 +335,44 @@ class NavigationActivity : Activity() {
             }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(splitRightBlindspotView, LinearLayout.LayoutParams(0, -2, 1f))
         }
+        sidebar.addView(android.widget.TextClock(this).apply {
+            format24Hour = "HH:mm"
+            format12Hour = "HH:mm"
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(Color.rgb(205, 208, 210))
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        }, LinearLayout.LayoutParams(-1, dp(40)))
         sidebar.addView(statusRow, LinearLayout.LayoutParams(-1, -2))
         splitSpeedView = TextView(this).apply {
             gravity = Gravity.CENTER
-            textSize = if (compact) 60f else 80f
-            typeface = android.graphics.Typeface.create("sans-serif-light", android.graphics.Typeface.NORMAL)
+            textSize = if (compact) 84f else 108f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             includeFontPadding = false
             setTextColor(Color.WHITE)
             text = "—"
             contentDescription = "车辆速度暂无数据"
         }
-        sidebar.addView(splitSpeedView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
-        sidebar.addView(TextView(this).apply {
-            gravity = Gravity.CENTER
-            textSize = 12f
-            text = "km/h"
-            setTextColor(Color.LTGRAY)
-        })
-        sidebar.addView(LinearLayout(this).apply {
+        // Match the original free Fusion dashboard's centered speed and narrow instrument pane.
+        // Keep our existing left instrument/right map order and data freshness/source rules.
+        sidebar.addView(FrameLayout(this).apply {
+            minimumHeight = dp(if (compact) 180 else 216)
+            addView(LinearLayout(this@NavigationActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                addView(splitSpeedView, LinearLayout.LayoutParams(-1, -2))
+                addView(TextView(this@NavigationActivity).apply {
+                    gravity = Gravity.CENTER
+                    textSize = 12f
+                    text = "KM/H"
+                    letterSpacing = 0.12f
+                    setTextColor(Color.rgb(135, 139, 143))
+                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            }, FrameLayout.LayoutParams(-1, -1))
+        }, LinearLayout.LayoutParams(-1, 0, 1f))
+        val batteryRow = LinearLayout(this).apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(10), dp(8), dp(10))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.rgb(27, 34, 42))
-                cornerRadius = dp(12).toFloat()
-            }
             for ((label, value) in listOf("电量" to "—%", "续航" to "— km")) {
                 addView(LinearLayout(this@NavigationActivity).apply {
                     orientation = LinearLayout.VERTICAL
@@ -380,21 +397,17 @@ class NavigationActivity : Activity() {
                     }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
                 }, LinearLayout.LayoutParams(0, -2, 1f))
             }
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12); bottomMargin = dp(12) })
+        }
         splitArrivalView = TextView(this).apply {
             textSize = 13f
             gravity = Gravity.CENTER
             setTextColor(Color.LTGRAY)
             visibility = View.GONE
         }
-        sidebar.addView(splitArrivalView, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         titaClient = com.garan.tesnav.teslable.TitaDashboardClient(this) { sample, _ ->
             titaSample = sample
             renderSplitSpeed()
         }
-        sidebar.addView(View(this).apply {
-            setBackgroundColor(Color.rgb(45, 53, 61))
-        }, LinearLayout.LayoutParams(-1, dp(1)))
         // All instrument content scrolls together; bottom controls keep their own space.
         navigationTopPanel.removeView(autoGuidanceView)
         navigationTopPanel.removeView(navigationSummaryView)
@@ -410,9 +423,11 @@ class NavigationActivity : Activity() {
         sidebar.addView(navigationSummaryView, LinearLayout.LayoutParams(-1, -2))
         navigationTopPanel.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         sidebar.addView(navigationTopPanel, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        sidebar.addView(splitArrivalView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        sidebar.addView(batteryRow, LinearLayout.LayoutParams(-1, -2))
         val sidebarPane = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(18, 23, 29))
+            setBackgroundColor(Color.rgb(10, 11, 12))
             addView(ScrollView(this@NavigationActivity).apply {
                 isFillViewport = true
                 addView(sidebar, FrameLayout.LayoutParams(-1, -2))
@@ -421,6 +436,20 @@ class NavigationActivity : Activity() {
         sidebarPane.addView(LinearLayout(this).apply {
             gravity = Gravity.CENTER
             setPadding(dp(16), 0, dp(16), dp(10))
+            for (button in listOf(settingsButton, debugButton)) {
+                button.background = null
+                button.elevation = 0f
+                button.setColorFilter(Color.rgb(145, 150, 155))
+                button.setPadding(dp(12), dp(12), dp(12), dp(12))
+            }
+            sourceButton.apply {
+                backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                setTextColor(Color.rgb(145, 150, 155))
+                textSize = 12f
+                isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                elevation = 0f
+            }
             addView(settingsButton, LinearLayout.LayoutParams(dp(48), dp(48)))
             addView(debugButton, LinearLayout.LayoutParams(dp(48), dp(48)))
             addView(sourceButton, LinearLayout.LayoutParams(0, dp(48), 1f))
@@ -448,11 +477,31 @@ class NavigationActivity : Activity() {
                 visibility = View.GONE
             }
             addView(embeddedAmapView, FrameLayout.LayoutParams(-1, -1))
+            if (BuildConfig.EXTENDED_NAV_SOURCES && Build.VERSION.SDK_INT >= 27) {
+                arOpenButton = Button(this@NavigationActivity).apply {
+                    text = "AR 模式"
+                    contentDescription = "选择特会开增强实景或高德原生实景"
+                    setOnClickListener { anchor ->
+                        android.widget.PopupMenu(this@NavigationActivity, anchor).apply {
+                            menu.add("特会开增强").setOnMenuItemClickListener {
+                                openEnhancedArRoad(); true
+                            }
+                            menu.add("高德原生").setOnMenuItemClickListener {
+                                openArRoad(); true
+                            }
+                            show()
+                        }
+                    }
+                }
+                addView(arOpenButton, FrameLayout.LayoutParams(dp(96),dp(48),Gravity.TOP or Gravity.END).apply {
+                    topMargin=dp(8); marginEnd=dp(8)
+                })
+            }
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.rgb(18, 23, 29))
-            val sidebarWidth = dp((resources.configuration.screenWidthDp * 0.38f).toInt().coerceAtLeast(300))
+            val sidebarWidth = dp((resources.configuration.screenWidthDp * 0.30f).toInt().coerceAtLeast(240))
             addView(sidebarPane, LinearLayout.LayoutParams(sidebarWidth, -1))
             addView(rightPane, LinearLayout.LayoutParams(0, -1, 1f))
         }
@@ -687,6 +736,12 @@ class NavigationActivity : Activity() {
         // The car application's real UI replaces only the SDK map pane.
         splitMapPane?.visibility = if (autoSelected) View.INVISIBLE else View.VISIBLE
         embeddedAmapView?.setActive(autoSelected && foreground)
+        arOpenButton?.visibility = if (autoSelected) View.VISIBLE else View.GONE
+        if (autoSelected && foreground && !arAutoOpened && state.routePlanned &&
+            state.navigationMode == NavigationMode.REALTIME &&
+            getSharedPreferences("c3-ar",MODE_PRIVATE).getString("token","").orEmpty().isNotEmpty()) {
+            openArRoad()
+        }
         autoGuidanceView.visibility = if (!splitLayout && autoSelected && state.routePlanned) View.VISIBLE else View.GONE
         if (currentSource == NavigationDataSource.AMAP_AUTO) {
             routeActions.visibility = if (BuildConfig.EXTENDED_NAV_SOURCES) View.VISIBLE else View.GONE
@@ -988,8 +1043,47 @@ class NavigationActivity : Activity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("arAutoOpened", arAutoOpened)
         if (::naviView.isInitialized) naviView.onSaveInstanceState(outState)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun openEnhancedArRoad() {
+        arAutoOpened = true
+        val configured = getSharedPreferences("c3-ar",MODE_PRIVATE).getString("token","").orEmpty().isNotEmpty()
+        startActivity(Intent().setClassName(packageName, if (configured)
+            "com.garan.tesnav.ui.ArRoadActivity" else "com.garan.tesnav.ar.C3ArActivity"))
+    }
+
+    private fun openArRoad() {
+        arAutoOpened = true
+        val configured = getSharedPreferences("c3-ar",MODE_PRIVATE).getString("token","").orEmpty().isNotEmpty()
+        if (configured) {
+            runCatching {
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent().setClassName("com.autonavi.amapauto.gdarcameraservicedemo",
+                    "com.autonavi.amapauto.gdarcameraservicedemo.ConnectActivity"), 3107)
+            }.onFailure { toast("请安装配套的高德 AR 兼容入口") }
+        } else startActivity(Intent().setClassName(packageName,"com.garan.tesnav.ar.C3ArActivity"))
+    }
+
+    @Deprecated("Android compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 3107) {
+            if (resultCode == RESULT_OK) {
+                if (!AmapAutoActions.open(this)) toast("未能打开高德原生 AR")
+            } else {
+                val reason = runCatching {
+                    Class.forName("com.garan.tesnav.ar.C3ArCameraService")
+                        .getMethod("displayStatus").invoke(null) as? String
+                }.getOrNull().orEmpty()
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("高德原生 AR 暂不可用")
+                    .setMessage("尚未收到 C3 实时画面。\n$reason\n\n请确认 C3 已正常启动，且平板能连接 C3 视频服务。")
+                    .setPositiveButton("知道了", null).show()
+            }
+        }
     }
 
     private fun stopNavigationAndFinish() {

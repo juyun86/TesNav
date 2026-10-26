@@ -1084,7 +1084,7 @@ class NavigationRepository(
         val geometryHash = coordinates.fold(1L) { hash, point ->
             31L * (31L * hash + point.latitude.toBits()) + point.longitude.toBits()
         }
-        val signature = "${path.pathid}:${path.allLength}:${coordinates.size}:" +
+        val signature = "${stateStore.state.value.routeRevision}:${path.pathid}:${path.allLength}:${coordinates.size}:" +
             "${first.latitude}:${first.longitude}:${last.latitude}:${last.longitude}:$geometryHash"
         if (signature == publishedRouteSignature) return
         publishedRouteSignature = signature

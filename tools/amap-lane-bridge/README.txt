@@ -1,0 +1,8 @@
+Pinned U8 Amap lane bridge, 2026-10-13
+
+Source implements callback-driven display-state forwarding and read-only engine observations.
+13012 retains existing gbl_lane_action_v1 recommended-lane schema. Heartbeats are emitted only during real navigation on the same path/segment, at most about1Hz; engine hide/route/stop hooks clear cached display state. A gap >2500ms invalidates state rather than renewing an old observation after reconnection. No timer or navigation/vehicle command is added.
+60074 is a PRIVATE TesNav diagnostic extension on AUTONAVI_STANDARD_BROADCAST_SEND, explicitly addressed to com.garan.tesnav.tenengkai. EXTRA_LANE_ENGINE JSON is retained by the installed host's generic broadcast capture and appears in its diagnostic dialog. This is not an official Amap protocol number. It is not promoted into C3 control snapshots.
+Engine fields: entered/status and original callback age; naviState/carDisplayMode and age; raw CurrentLaneGroup laneNo/laneCount/laneGroupId/tickTime and original sample age. Repeated engine tick never renews track age. egoPositionVerified=false/controlAllowed=false are deliberate until the digital-track lane-index origin and localization mode are independently validated. Center/Recommend display modes are not proof of ego lane.
+No forced enterLane, fake position, mode override, observer data injection, or control gate relaxation.
+Build/verification scripts and APK manifest: D:/C3/.codex-tmp/amap-lane-engine-20261013. APK is patched against the verified installed v6 baseline; only classes13, classes21 and classes26 are replaced. Do not install a whole unrelated dirty TesNav build.

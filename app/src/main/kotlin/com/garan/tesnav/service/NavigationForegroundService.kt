@@ -31,6 +31,7 @@ import com.garan.tesnav.export.ExportConfig
 import com.garan.tesnav.export.ExportConnectionState
 import com.garan.tesnav.export.AndroidKeystoreNavAssistIdentity
 import com.garan.tesnav.export.HttpNavAssistV2Exporter
+import com.garan.tesnav.export.NavAssistModelRoute
 import com.garan.tesnav.export.NavAssistPairingStore
 import com.garan.tesnav.export.NavAssistV2ConnectionStatus
 import com.garan.tesnav.export.NavAssistV2ExportConfig
@@ -74,7 +75,13 @@ class NavigationForegroundService : Service() {
     lateinit var exporter: WebSocketNavigationDataExporter
         private set
     private lateinit var navAssistV2Exporter: HttpNavAssistV2Exporter
+    @Volatile private var modelRoute: NavAssistModelRoute? = null
         private set
+    internal fun modelMapPreviewRoute(): NavAssistModelRoute? {
+        val state = stateStore.state.value
+        return modelRoute?.takeIf { navigationDataSource.value == NavigationDataSource.AMAP_API &&
+            state.acceptedPathId == it.pathId && state.routeRevision == it.routeRevision }
+    }
     private lateinit var navAssistSession: NavAssistV2Session
     private val sourceGate = com.garan.tesnav.model.NavigationSourceGate(
         BuildConfig.NAV_ASSIST_SOURCE_BUDGET_MS, BuildConfig.NAV_ASSIST_PROGRESS_BUDGET_MS,
@@ -83,6 +90,7 @@ class NavigationForegroundService : Service() {
         private set
     private lateinit var repository: NavigationRepository
     private var locationBridge: NavigationLocationBridge? = null
+    private var amapVehicleLocationPublisher: AmapVehicleLocationPublisher? = null
     private val amapAutoVehicleLocation = com.garan.tesnav.model.VehicleLocationObservation()
     private val amapAutoLocationSelector = com.garan.tesnav.model.NavigationLocationFallback()
     private lateinit var laneSpeech: LaneChangeSpeech
@@ -126,6 +134,8 @@ class NavigationForegroundService : Service() {
     private var routeRequestDestination: TeslaNavigationDestination? = null
     private var activeTeslaDestination: TeslaNavigationDestination? = null
     private var failedTeslaDestination: TeslaNavigationDestination? = null
+    private var failedTeslaDestinationAttempts = 0
+    private var failedTeslaDestinationRetryAt = 0L
     private var teslaAutoRequestId = 0L
     private val mutableTeslaAutoSyncStatus = MutableStateFlow("")
     internal val teslaAutoSyncStatus = mutableTeslaAutoSyncStatus.asStateFlow()
@@ -189,6 +199,10 @@ class NavigationForegroundService : Service() {
         navAssistIdentity = AndroidKeystoreNavAssistIdentity.loadOrCreate(applicationContext)
         navAssistPairingStore = NavAssistPairingStore(applicationContext)
         repository = NavigationRepository(applicationContext, stateStore) { path ->
+            modelRoute = path?.let {
+                NavAssistModelRoute(it.pathid, stateStore.state.value.routeRevision,
+                    it.coordList.orEmpty().map { point -> GeoPoint(point.latitude, point.longitude) })
+            }
             if (!legacyExportEnabled || !::exporter.isInitialized) return@NavigationRepository
             if (path == null) {
                 exporter.clearRoute()
@@ -202,10 +216,14 @@ class NavigationForegroundService : Service() {
         }
         repository.initialize()
         locationBridge = NavigationLocationBridge(this, repository, ::refreshAmapAutoLocation)
+        if (BuildConfig.EXTENDED_NAV_SOURCES) amapVehicleLocationPublisher = AmapVehicleLocationPublisher(this)
         scope.launch {
             while (true) {
                 locationBridge?.update(selectedNavigationState(), mutableOemVehicleLaneState.value)
                 refreshAmapAutoLocation()
+                amapVehicleLocationPublisher?.update(
+                    mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO,
+                    mutableOemVehicleLaneState.value)
                 kotlinx.coroutines.delay(200)
             }
         }
@@ -246,11 +264,11 @@ class NavigationForegroundService : Service() {
     }
 
     fun planRoute(latitude: Double, longitude: Double): Boolean {
-        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false)
+        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false, persistPreference = false)
         return repository.planRoute(latitude, longitude)
     }
     internal fun navigateAmapAutoDestination(name: String, latitude: Double, longitude: Double): Boolean {
-        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false)
+        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false, persistPreference = false)
         return com.garan.tesnav.ui.AmapAutoActions.navigate(this, name, latitude, longitude)
     }
     fun selectRoute(routeId: Int): Boolean = repository.selectRoute(routeId)
@@ -271,7 +289,7 @@ class NavigationForegroundService : Service() {
         if (mode == com.garan.tesnav.config.SpeechMode.MUTED) laneSpeech.cancel()
     }
     fun stopNavigation() {
-        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false)
+        if (mutableTeslaBleSyncEnabled.value) setTeslaBleSyncEnabled(false, persistPreference = false)
         laneSpeech.cancel()
         sourceGate.disarm()
         repository.stopNavigation()
@@ -313,9 +331,9 @@ class NavigationForegroundService : Service() {
         return null
     }
 
-    fun setTeslaSyncEnabled(enabled: Boolean) {
+    fun setTeslaSyncEnabled(enabled: Boolean, persistBlePreference: Boolean = true) {
         if (mutableTeslaSyncEnabled.value == enabled && !mutableTeslaBleSyncEnabled.value) return
-        if (enabled || mutableTeslaBleSyncEnabled.value) {
+        if (persistBlePreference && (enabled || mutableTeslaBleSyncEnabled.value)) {
             preferences().edit().putBoolean(TESLA_BLE_SYNC_ENABLED, false).apply()
         }
         mutableTeslaBleSyncEnabled.value = false
@@ -330,8 +348,11 @@ class NavigationForegroundService : Service() {
         if (enabled) startHomeAssistant() else homeAssistantClient.stop()
     }
 
-    internal fun setTeslaBleSyncEnabled(enabled: Boolean): String? {
-        if (enabled == mutableTeslaBleSyncEnabled.value) return null
+    internal fun setTeslaBleSyncEnabled(enabled: Boolean, persistPreference: Boolean = true): String? {
+        if (enabled == mutableTeslaBleSyncEnabled.value) {
+            if (persistPreference) preferences().edit().putBoolean(TESLA_BLE_SYNC_ENABLED, enabled).apply()
+            return null
+        }
         if (enabled) {
             if (!BuildConfig.EXTENDED_NAV_SOURCES) return "当前应用未启用原车蓝牙同步"
             if (!teslaBleClient.configured) return "请先配置 VIN 和目的地坐标系"
@@ -345,7 +366,7 @@ class NavigationForegroundService : Service() {
             if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_API &&
                 state.navigationMode != NavigationMode.IDLE && !state.startedFromTeslaSync) return "请先结束当前导航再开启原车同步"
         }
-        setTeslaSyncEnabled(false)
+        setTeslaSyncEnabled(false, persistBlePreference = false)
         mutableTeslaBleSyncEnabled.value = enabled
         mutableTeslaSyncEnabled.value = enabled
         resetTeslaSyncTracking()
@@ -359,7 +380,7 @@ class NavigationForegroundService : Service() {
                 return e.message ?: "蓝牙同步启动失败"
             }
         }
-        preferences().edit().putBoolean(TESLA_BLE_SYNC_ENABLED, enabled).apply()
+        if (persistPreference) preferences().edit().putBoolean(TESLA_BLE_SYNC_ENABLED, enabled).apply()
         return null
     }
 
@@ -403,6 +424,7 @@ class NavigationForegroundService : Service() {
         trafficLightReceiver?.let { runCatching { unregisterReceiver(it) } }
         trafficLightReceiver = null
         locationBridge?.close()
+        amapVehicleLocationPublisher?.close()
         if (::laneSpeech.isInitialized) laneSpeech.close()
         exporterObservationJobs.forEach(Job::cancel)
         exporterObservationJobs.clear()
@@ -532,6 +554,12 @@ class NavigationForegroundService : Service() {
             onCommaState = commaStateStore::set,
         )
         navAssistV2Exporter = HttpNavAssistV2Exporter(
+            modelRouteProvider = {
+                val route = modelRoute
+                val state = stateStore.state.value
+                route?.takeIf { mutableNavigationDataSource.value == NavigationDataSource.AMAP_API &&
+                    state.acceptedPathId == it.pathId && state.routeRevision == it.routeRevision }
+            },
             config = navAssistV2Config,
             navigationSession = navAssistSession,
             stateProvider = {
@@ -694,6 +722,13 @@ class NavigationForegroundService : Service() {
             teslaBleClient.state.collect { bleState ->
                 if (mutableTeslaBleSyncEnabled.value) {
                     handleTeslaBleDestinationCancelled(bleState)
+                    // A genuinely new target gets its own recovery budget.
+                    if (bleState.fresh(android.os.SystemClock.elapsedRealtime()) && bleState.destination != null &&
+                        failedTeslaDestination != null) {
+                        if (bleState.destination != failedTeslaDestination) {
+                            clearTeslaDestinationFailure()
+                        }
+                    }
                     handleTeslaRouteProgress(stateStore.state.value)
                     tryStartTeslaNavigation()
                 }
@@ -754,6 +789,7 @@ class NavigationForegroundService : Service() {
         val autoSelected = mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO
         val ownsApi = NavigationSourcePolicy.syncOwnsNavigation(
             mutableNavigationDataSource.value, stateStore.state.value)
+        clearTeslaDestinationFailure()
         if (routeRequestDestination == null && activeTeslaDestination == null && !ownsApi) return
         // Invalidate any destination still waiting for the embedded display to load.
         teslaAutoRequestId++
@@ -779,7 +815,7 @@ class NavigationForegroundService : Service() {
         if (!teslaSyncReady()) return
         val destination = currentTeslaDestination() ?: return
         if (mutableTeslaBleSyncEnabled.value && routeRequestDestination != null) return
-        if (destination == activeTeslaDestination || destination == routeRequestDestination || destination == failedTeslaDestination) return
+        if (destination == activeTeslaDestination || destination == routeRequestDestination || teslaDestinationFailureBlocks(destination)) return
 
         val navigationState = stateStore.state.value
         if (navigationState.latitude == null || navigationState.longitude == null) return
@@ -793,13 +829,13 @@ class NavigationForegroundService : Service() {
             if (mutableTeslaBleSyncEnabled.value) activeTeslaDestination = null
             routeRequestDestination = destination
         } else {
-            failedTeslaDestination = destination
+            recordTeslaDestinationFailure(destination)
         }
     }
 
     private fun trySendTeslaAutoDestination() {
         val destination = currentTeslaDestination() ?: return
-        if (destination == activeTeslaDestination || destination == routeRequestDestination || destination == failedTeslaDestination) return
+        if (destination == activeTeslaDestination || destination == routeRequestDestination || teslaDestinationFailureBlocks(destination)) return
         val requestId = ++teslaAutoRequestId
         routeRequestDestination = destination
         mutableTeslaAutoSyncStatus.value = "正在发送目的地到高德车机"
@@ -813,18 +849,19 @@ class NavigationForegroundService : Service() {
                 if (requestId == teslaAutoRequestId) {
                     routeRequestDestination = null
                     if (sent) {
+                        clearTeslaDestinationFailure()
                         activeTeslaDestination = destination // Dispatched target only, not a navigation ACK.
                         mutableTeslaAutoSyncStatus.value = "目的地已发送 · 以高德车机实际导航广播为准"
                     } else {
                         if (mutableNavigationDataSource.value == NavigationDataSource.AMAP_AUTO &&
-                            teslaSyncReady() && currentTeslaDestination() == destination) failedTeslaDestination = destination
+                            teslaSyncReady() && currentTeslaDestination() == destination) recordTeslaDestinationFailure(destination)
                         mutableTeslaAutoSyncStatus.value = "目的地发送已取消或失败 · 等待有效原车目的地"
                     }
                 }
             })
         if (!queued) {
             routeRequestDestination = null
-            failedTeslaDestination = destination
+            recordTeslaDestinationFailure(destination)
             mutableTeslaAutoSyncStatus.value = "未能打开高德车机，请检查安装和启动权限后重新开启同步"
         }
     }
@@ -842,16 +879,35 @@ class NavigationForegroundService : Service() {
             } else if (repository.startRealtime()) {
                 sourceGate.arm(android.os.SystemClock.elapsedRealtime())
                 activeTeslaDestination = requestedDestination
-                failedTeslaDestination = null
+                clearTeslaDestinationFailure()
             } else {
-                failedTeslaDestination = requestedDestination
+                recordTeslaDestinationFailure(requestedDestination)
             }
         } else if (state.errorMessage?.startsWith("路线规划失败") == true ||
             state.errorMessage?.startsWith("路线规划请求失败") == true
         ) {
             routeRequestDestination = null
-            failedTeslaDestination = requestedDestination
+            recordTeslaDestinationFailure(requestedDestination)
         }
+    }
+
+    private fun teslaDestinationFailureBlocks(destination: TeslaNavigationDestination): Boolean =
+        destination == failedTeslaDestination && !teslaDestinationRetryAllowed(
+            mutableTeslaBleSyncEnabled.value, failedTeslaDestinationAttempts,
+            failedTeslaDestinationRetryAt, android.os.SystemClock.elapsedRealtime())
+
+    private fun recordTeslaDestinationFailure(destination: TeslaNavigationDestination) {
+        if (failedTeslaDestination != destination) clearTeslaDestinationFailure()
+        failedTeslaDestination = destination
+        failedTeslaDestinationAttempts++
+        failedTeslaDestinationRetryAt = android.os.SystemClock.elapsedRealtime() +
+            com.garan.tesnav.teslable.TeslaBleRecovery.reconnectDelayMs(failedTeslaDestinationAttempts)
+    }
+
+    private fun clearTeslaDestinationFailure() {
+        failedTeslaDestination = null
+        failedTeslaDestinationAttempts = 0
+        failedTeslaDestinationRetryAt = 0L
     }
 
     private fun resetTeslaSyncTracking() {
@@ -861,7 +917,7 @@ class NavigationForegroundService : Service() {
         lastTeslaNavActive = null
         routeRequestDestination = null
         activeTeslaDestination = null
-        failedTeslaDestination = null
+        clearTeslaDestinationFailure()
     }
 
     private fun preferences() = getSharedPreferences(HA_PREFS, MODE_PRIVATE)
@@ -979,3 +1035,7 @@ class NavigationForegroundService : Service() {
         }
     }
 }
+
+/** The caller also requires a fresh, currently present vehicle destination. */
+internal fun teslaDestinationRetryAllowed(bleEnabled: Boolean, failures: Int, retryAt: Long, now: Long): Boolean =
+    bleEnabled && failures in 1..3 && now >= retryAt

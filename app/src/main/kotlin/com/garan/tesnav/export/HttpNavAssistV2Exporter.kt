@@ -29,7 +29,8 @@ internal fun confirmsNavigationSnapshot(body: String, response: String): Boolean
     val sent = JsonParser.parseString(body).asJsonObject
     val ack = JsonParser.parseString(response).asJsonObject
     ack["accepted"]?.asBoolean == true && ack["sessionId"]?.asString == sent["sessionId"].asString &&
-        ack["sequence"]?.asLong == sent["sequence"].asLong
+        ack["sequence"]?.asLong == sent["sequence"].asLong &&
+        (sent["messageType"]?.asString != "navigation_route" || ack["routeRevision"]?.asLong == sent["routeRevision"].asLong)
 }.getOrDefault(false)
 
 enum class NavAssistV2ConnectionStatus {
@@ -110,6 +111,7 @@ internal class HttpNavAssistV2Exporter(
     private val ownerSettleMs: Long = 3_000L,
     private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val feedbackElapsedMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
+    private val modelRouteProvider: () -> NavAssistModelRoute? = { null },
 ) : NavigationDataExporter {
     private val mutableConnectionState = MutableStateFlow(ExportConnectionState.STOPPED)
     override val connectionState: StateFlow<ExportConnectionState> = mutableConnectionState
@@ -148,6 +150,11 @@ internal class HttpNavAssistV2Exporter(
     @Volatile private var running = false
     @Volatile private var rediscoveryRequested = false
     private var publisherJob: Job? = null
+    private var routeJob: Job? = null
+    @Volatile private var uploadedRouteKey: String? = null
+    private var routeAttemptKey: String? = null
+    @Volatile private var routeRetryAtMs = 0L
+    @Volatile private var routeRefreshAtMs = 0L
     private var stopped = false
     @Volatile private var ownerConfirmed = false
     private var ownerReadyAtMs: Long? = null
@@ -206,6 +213,10 @@ internal class HttpNavAssistV2Exporter(
                     }
                     if (attempt != null) {
                         val ack = attempt.second
+                        AuthenticatedC3HostDiscovery.observeNavigationHost(ack?.host)
+                        if (ack != null) {
+                            discoveryEndpoint(ack.host)?.let { uploadModelRoute(attempt.first, it, null, ack.modelRouteRevision) }
+                        }
                         publishIfRunning {
                             mutableLaneAnnouncement.value = ack?.announcement
                             if (ack?.announcement?.id != completedAnnouncement?.id) completedAnnouncement = null
@@ -382,6 +393,7 @@ internal class HttpNavAssistV2Exporter(
         }.fold(
             onSuccess = {
                 recordOwnerResponse(true)
+                uploadModelRoute(snapshot, endpoint.url, endpoint.deviceId)
                 publishIfRunning {
                     mutableDeliveryState.value = NavAssistDeliveryState(snapshot.sessionId, snapshot.sequence,
                         true, monotonicMs(), ownerConfirmed, snapshot.routeActive)
@@ -454,6 +466,38 @@ internal class HttpNavAssistV2Exporter(
     }
 
     private enum class PostResult { NO_STATE, SUCCESS, FAILURE }
+
+    /** One bounded side upload; never delay snapshots or take the session send lock. */
+    private fun uploadModelRoute(snapshot: NavAssistV2Snapshot, endpoint: HttpUrl, deviceId: String?, cachedRevision: Long? = null) {
+        if (!running || routeJob?.isActive == true) return
+        val route = modelRouteProvider() ?: return
+        if (!snapshot.routeActive || snapshot.routeRevision != route.routeRevision) return
+        if (cachedRevision == route.routeRevision) return
+        val key = "$endpoint:${snapshot.sessionId}:${route.routeRevision}:${route.pathId}"
+        val now = monotonicMs()
+        if ((routeAttemptKey == key && now < routeRetryAtMs) ||
+            (cachedRevision == null && uploadedRouteKey == key && now < routeRefreshAtMs)) return
+        routeAttemptKey = key
+        routeRetryAtMs = now + 5_000L
+        routeJob = scope.launch {
+            runCatching {
+                val body = route.body(snapshot, System.currentTimeMillis()) ?: return@launch
+                val target = endpoint.resolve(NavAssistModelRoute.PATH) ?: return@launch
+                val keyId = if (deviceId == null) "" else identity.keyId
+                val signature = if (deviceId == null) "" else identity.sign(
+                    NavAssistV3Auth.snapshotSignatureMaterial(deviceId, keyId, NavAssistModelRoute.PATH,
+                        body.toByteArray(Charsets.UTF_8)))
+                if (!running) return@launch
+                httpClient.post(target, body, keyId, signature)
+            }.onSuccess {
+                if (running) {
+                    uploadedRouteKey = key
+                    // Renew through accepted snapshots after a receiver restart/cache invalidation.
+                    routeRefreshAtMs = monotonicMs() + 30_000L
+                }
+            }
+        }
+    }
 
     private companion object {
         const val NANOS_PER_MILLISECOND = 1_000_000L

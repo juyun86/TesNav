@@ -198,6 +198,14 @@ class SettingsDialog(
                     context.startActivity(Intent(context, com.garan.tesnav.teslable.TeslaBleNavigationActivity::class.java))
                 }
             }, matchWidthParams(dp(12)))
+            if (com.garan.tesnav.BuildConfig.EXTENDED_NAV_SOURCES) addView(Button(context).apply {
+                text = "C3 实景选道 · 高德 AR 接口"
+                setOnClickListener {
+                    if (android.os.Build.VERSION.SDK_INT >= 27) {
+                        context.startActivity(Intent().setClassName(context.packageName, "com.garan.tesnav.ar.C3ArActivity"))
+                    } else android.widget.Toast.makeText(context, "AR 接口需要 Android 8.1 或更高版本", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }, matchWidthParams(dp(12)))
             if (com.garan.tesnav.BuildConfig.EXTENDED_NAV_SOURCES) {
                 @Suppress("DEPRECATION")
                 addView(Switch(context).apply {

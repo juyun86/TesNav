@@ -452,6 +452,10 @@ class MainActivity : Activity(), AddressLookupView {
                 NavigationStateDialog(this, activityScope, service).show()
             }
         }
+        if (BuildConfig.DEBUG) debugButton.setOnLongClickListener {
+            startActivity(Intent(this, com.garan.tesnav.ui.NavigationMapPreviewActivity::class.java))
+            true
+        }
     }
 
     private fun searchDestinationAddress(@Suppress("UNUSED_PARAMETER") ignored: View? = null) {

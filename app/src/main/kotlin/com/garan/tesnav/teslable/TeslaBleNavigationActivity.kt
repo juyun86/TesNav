@@ -77,12 +77,12 @@ class TeslaBleNavigationActivity : Activity() {
                 if (runtime.teslaBleSyncEnabled.value) { toast("请先关闭自动同步再配钥"); return@setOnClickListener }
                 if (!saveConfiguration()) return@setOnClickListener
                 isEnabled = false
-                status.text = "正在发送配钥请求…请按原车提示刷卡确认"
+                status.text = "正在准备配钥，尚未发送请求"
                 pairing = scope.launch {
                     try { withContext(Dispatchers.IO) { runtime.teslaBleClient.pair() } }
                     catch (e: Exception) {
                         currentCoroutineContext().ensureActive()
-                        status.text = if (e is TimeoutCancellationException) "配钥未能确认，请按原车提示刷卡后重试" else e.message ?: "配钥请求失败"
+                        status.text = e.message ?: "配钥请求失败"
                     }
                     finally { isEnabled = true }
                 }
@@ -91,7 +91,7 @@ class TeslaBleNavigationActivity : Activity() {
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding((20*dp).toInt(), (16*dp).toInt(), (20*dp).toInt(), (16*dp).toInt())
             addView(TextView(context).apply { text = "原车导航目的地同步"; textSize = 22f })
-            addView(TextView(context).apply { text = "原车设置或更换目的地后，高德 API 自动算路；高德车机接收目的地并由车机导航，请按车机提示确认。首次使用需在原车确认配钥。\n请先核对目的地坐标系，避免落点偏移。配置和权限齐全后默认开启，启动应用自动恢复，切换高德来源保持同步；手动关闭后保持关闭。"; textSize = 15f })
+            addView(TextView(context).apply { text = "原车设置或更换目的地后，高德 API 自动算路；高德车机接收目的地并由车机导航，请按车机提示确认。首次配钥请求发送后，先放置已有 NFC 钥匙卡，再在车机确认添加钥匙。\n请先核对目的地坐标系，避免落点偏移。配置和权限齐全后默认开启，启动应用自动恢复，切换高德来源保持同步；手动关闭后保持关闭。"; textSize = 15f })
             addView(vin); addView(coordinates); addView(pairButton); addView(toggle); addView(status)
             addView(Button(context).apply { text = "查看高德导航"; setOnClickListener { startActivity(Intent(context, NavigationActivity::class.java)) } })
             addView(Button(context).apply { text = "返回"; setOnClickListener { finish() } })

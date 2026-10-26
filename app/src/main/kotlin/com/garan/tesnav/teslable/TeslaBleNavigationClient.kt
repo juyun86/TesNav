@@ -180,12 +180,20 @@ internal class TeslaBleNavigationClient(private val context: Context) {
         check(job?.isActive != true) { "请先关闭蓝牙同步再配钥" }
         require(TeslaNavigationProtocol.validVin(vin)) { "请先保存 VIN" }
         val connection = TeslaBleTransport(context)
+        var stage = "正在准备配钥"
+        fun progress(message: String) {
+            stage = message
+            android.util.Log.i("TesNav-TeslaBLE", "pair_stage=$message")
+            mutableState.value = TeslaBleNavigationState(status = message)
+        }
         try {
+            progress(stage)
             val identity = TeslaBleIdentity.loadOrCreate(context)
-            connection.connect(vin)
+            connection.connect(vin, ::progress)
+            progress("正在发送配钥请求，尚未确认车辆接受")
             connection.send(TeslaNavigationProtocol.pairRequest(TeslaNavigationProtocol.publicBytes(identity.public)))
             // A completed GATT write is not proof of vehicle enrollment.
-            mutableState.value = TeslaBleNavigationState(status = "配钥请求已发送，请按原车提示刷卡确认，然后开启同步验证")
+            progress("配钥请求已发送，请立即放置已有 NFC 钥匙卡，再在车机确认添加钥匙")
             withTimeout(60000) {
                 while (true) {
                     delay(2000)
@@ -199,6 +207,14 @@ internal class TeslaBleNavigationClient(private val context: Context) {
                     } catch (e: Exception) { currentCoroutineContext().ensureActive() }
                 }
             }
+        } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
+            val message = if (e is TimeoutCancellationException) {
+                if (stage.startsWith("配钥请求已发送")) "配钥请求已发送，但未通过车辆认证；请核对是否先刷卡、再在车机确认"
+                else "$stage：超时，配钥尚未确认"
+            } else e.message ?: "配钥请求失败"
+            mutableState.value = TeslaBleNavigationState(status = message)
+            throw IllegalStateException(message, e)
         } finally { connection.close() }
     }
     fun stop() {

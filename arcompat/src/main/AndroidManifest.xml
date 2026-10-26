@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="com.garan.tesnav.tenengkai.permission.AR_BRIDGE" />
+    <queries><package android:name="com.garan.tesnav.tenengkai" /></queries>
+    <application android:label="特会开高德 AR 兼容入口" android:allowBackup="false">
+        <activity android:name=".ConnectActivity" android:exported="true" android:excludeFromRecents="true"
+            android:permission="com.garan.tesnav.tenengkai.permission.AR_BRIDGE"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <service android:name=".CameraService" android:exported="true">
+            <intent-filter><action android:name="com.autonavi.amapauto.gdarcameraservice" /></intent-filter>
+        </service>
+    </application>
+</manifest>

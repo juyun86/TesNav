@@ -259,6 +259,7 @@ internal object AmapAutoBroadcast {
         if (previous == null) return null // An unkeyed lane callback cannot install route facts.
         val parsed = runCatching {
             require(raw != null && raw.length <= 32_768)
+            if (GblLaneBroadcast.isNative(raw)) return@runCatching requireNotNull(GblLaneBroadcast.parse(raw))
             val obj = JsonParser.parseString(raw).asJsonObject
             if (!obj["drive_way_enabled"].asBoolean) return@runCatching emptyList<LaneState>()
             val count = obj["drive_way_size"].asInt
@@ -288,7 +289,7 @@ internal object AmapAutoBroadcast {
             // Keep this display projection separate from the exported lane facts.
             autoDisplayLanes = parsed.orEmpty().takeIf { keyed }.orEmpty().map { lane ->
                 lane.copy(recommended = lane.recommended ||
-                    (!lane.prohibited && lane.rawLaneType >= 0 && lane.rawLaneType != 23))
+                    (!GblLaneBroadcast.isNative(raw) && !lane.prohibited && lane.rawLaneType >= 0 && lane.rawLaneType != 23))
             },
             autoDisplayLanesPathId = previous.acceptedPathId.takeIf { keyed && parsed != null },
             lanesPathId = previous.acceptedPathId.takeIf { keyed && parsed != null },

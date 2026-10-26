@@ -1,0 +1,120 @@
+2026-10-19 特会开 AR 实机续测（北京时间约07:59—08:03）
+
+结论：部分通过，优先选道箭头未完成实机验收。
+- ADB 3VU6R21914002522 在线，已安装 com.garan.tesnav.tenengkai APK SHA256 为96f53aa3d41da5cd92dbb7c678a5d89f1c13dd274e2b8e5f2a62e03eb3a39abc，与10月16日箭头版一致。App PID8633，本轮未覆盖安装或修改App源码。
+- C3 boot 2f59a3bc-dd96-43f5-ac7f-7ea95e3b00e8。初始独立供帧服务未注册；/data源码hash仍e8c3ce77ca3da9290291e7b49e33cb47e833f1d9e5b0954d31e329ddbf0d2dd7。审阅既有start_ar_source.sh及unit后执行脚本，仅恢复该服务注册、Linger与启动；health ready=true/modelValid=true/started=true。未部署持久启动钩子，未重启C3或控制/相机/模型，未改Params或发CAN/GPIO。后续重启仍可能丢服务注册。
+- 起始确有原有活动路线，REALTIME/planned=true/matched=true/healthy。打开特会开主任务后自动进入自己的ArRoadActivity；真实道路、白色车道/红色边缘、雷达前车信息与导航卡片同时可见。
+- ar-merge-left.png 实际显示3组白色沿路透视箭头，在当前观测车道内，明确标注优先车道待确认。截图文件名只代表此前导航阶段，截图当时卡片已转为10.2km右转。高德推荐与本车绝对车道均待确认，不能把白色箭头或C3文字意向当作绿色/蓝色箭头验收。
+- 退出实景后health active=false，frames=313在两次分开的查询中保持；设置入口重进后connections从1变2，frames=338/active=true，真实画面恢复。Wi-Fi低延迟锁type=4已取得。本轮未专门采集锁释放证据。
+- 定向命令gradlew testDebugUnitTest --tests com.garan.tesnav.ui.ArRoadGeometryTest --tests com.garan.tesnav.ui.ArLaneGuidancePresenterTest成功（Gradle UP-TO-DATE，使用既有缓存）；XML确认15+7=22项，failure/error/skipped均0。首次误用不存在的testTenengkaiDebugUnitTest，已纠正；该失败不是代码测试失败。
+
+未解决与测试边界：
+- 临时将Android accelerometer_rotation从1改0、user_rotation从0改1进行横屏测试，之后已恢复1/0原值。ArRoadActivity画面最终在横屏恢复；中途抓到全屏黑色且窗口焦点StatusBar，未确认具体原因，不能声称横屏无黑闪。
+- 横屏期间08:02:15.964出现expired frameAgeMs=831，之后继续收帧。说明超时清屏仍存在，不能称延迟问题解决。本次采集未发现10月19日App FATAL EXCEPTION；日志中的10月14—16日旧异常不计本轮崩溃。
+- 旋屏附近高德MainMapActivity从原t578实例变为新t579，AR引导过期并隐藏路面箭头；返回地图后真实状态IDLE/planned=false/source=inactive，原活动路线已不再播报。时间相关性已确认，尚未隔离旋屏、底层导航/嵌入显示重建等具体因果。源码显示NavigationActivity默认随旋屏重建，onStop/onDestroy会释放嵌入显示，是待核对路径，未据此修改生命周期。
+- 过期时实际截图after-rotation.png/final.png可见“引导已过期”且无路面箭头；这是过期清除证据，不代表完整重算、退出路线、重新定位矩阵通过。
+- 已请乘客恢复刚才原路线；未擅设目的地或停止导航。本轮收尾重新打开特会开实景页供观察。
+- 绿色推荐/蓝色意向/黄色左右方向的实车位置、推荐切换取消、路线重算、旋屏后活动路线保持仍未完成；当前缺活动路线及确认的推荐/本车车道输入。需要恢复原路线后继续。
+
+证据目录：D:/C3/.codex-tmp/ar-verification-20261019
+主要截图 ar-first.png、ar-merge-left.png、map-return.png、ar-reopened.png、after-rotation.png、final.png。
+文本日志 live-log.txt、final-log.txt。ar-log.txt包含旧异常，按日期过滤解读。
+共享工作树已有大量改动，未覆盖或清理。临时配置UI转储已立即删除，未输出凭据。
+
+路线消失专项排查（用户随后要求）
+结论：已确认原高德导航任务被系统销毁、随后重新建立空任务。特会开嵌入显示的释放链路是当前代码与时序共同指向的原因；不是仅丢失AR卡片。未在本轮修改或部署修复。
+
+实时系统事件：
+08:01:57.827 configuration_changed；57.953 NavigationActivity被am_relaunch_activity。
+08:01:58.184 NavigationActivity.onStop(handleRelaunchActivity)，58.243 onDestroy，58.427 onCreate；58.884原stack72记录移除。
+08:01:59.915 高德MainMapActivity.onDestroy，08:02:00.001同一任务的页面重建。
+08:02:05.114 AR页收到onStop(sleeping)，05.167配置页收到onStop(sleeping)。05.183系统明确销毁高德原任务t578的MainMapActivity，原因finish-imm:finishAllActivitiesLocked；05.190 NavigationActivity收到onStop(sleeping)，05.463 screen_toggled=0。事件排队/跨线程先后不能当作精确调用栈。
+08:02:06.837 原t578被removeTask。
+08:02:12—15底层配置/导航页再次重建。
+08:02:16.301 重新通过androidauto://launch新建高德任务t579。之后App导航状态IDLE/planned=false。
+高德进程9156在页面销毁与重建前后保持，不能解释为进程崩溃或被系统杀进程。
+
+对应代码：
+NavigationActivity.kt:1025 onStop调用embeddedAmapView.setActive(false)；1061 onDestroy调用dispose。
+EmbeddedAmapView.kt:111 setActive(false)进入release；274—282 releaseDisplay无条件display.release；292 Surface销毁也直接释放显示。
+EmbeddedAmapBridge.kt:64—83 新显示先寻找原高德任务，找不到则启动新MainMapActivity，不恢复原活动路线。
+AR页自身虽然处理orientation/screenSize，其下面的NavigationActivity和C3ArActivity仍被旋屏重建；仅保护AR页不能保护高德任务。
+
+判断边界：
+确证“横屏测试触发底层页重建，随后熄屏/停止期间原高德任务被销毁，新任务启动后无路线”。代码强烈支持虚拟显示释放造成任务丢失，但本次没有逐次display.release调用堆栈，也未重复破坏活动路线做因果实验。不能把一切简写成高德崩溃，也未查明短暂screen_toggled=0由谁触发。
+修复方向应在释放虚拟显示前保住/迁回原高德任务，并覆盖旋屏、熄屏及Surface销毁入口；不能只在重开后新启动一个高德首页或伪造旧路线状态。用户本条要求排查，尚未做此代码改动。
+证据 route-loss-all-log.txt（系统event日志）、route-loss-activities.txt；此前记录中“旋屏附近”已由以上精确时序补充。
+
+
+2026-10-19 平板高德路线保持修复：仅本地完成，待停车安装
+
+用户澄清：特斯拉原车导航始终正常；本问题是平板高德活动路线丢失，不能称原车导航消失。
+仅修改特会开EmbeddedAmapBridge.kt / EmbeddedAmapView.kt，保留共享工作树已有改动。
+释放私有虚拟显示前，只迁回该显示内、全部任务名和顶部组件都属于高德的stack；迁移目标Display0，重新查询该源显示无stack后才释放。
+主线程立即使旧代际失效；迁移及显示释放放在串行worker，不在主线程等待Binder。跨Activity实例共享串行worker，避免旋屏时旧释放与新启动竞态。
+Binder失败/撤权/任务范围不符则保留待回收显示，重连或有限重试时再处理；有待回收显示时先完成回收，不继续创建新显示。未绕过权限，不调用结束导航/移除任务/强停高德。
+该迁移路径针对当前实机Android29+；低于29时保守保留显示，未扩展旧系统迁移支持。无法迁移时可能暂时不能恢复嵌入地图，是保留路线的退化行为。
+
+验证：assembleTenengkai、assembleDebug成功；既有24项定向生命周期/AR几何/车道呈现测试通过，测试明细tests.json。单测不覆盖远端Binder实际迁移，不能据此称实机路线保持已验收。
+APK候选route-preserve.apk SHA256 e287bb9a4b19fe8b5bfb7c713bb4496e09435e87ccb5dd600490abebbc3a4010；相对设备回读installed-before.apk仅classes8.dex内容变化，其他APK条目一致。签名证书SHA256 0ab0d810ccbd2f4032673973473c2448fdb956358c5eb07acc21d73787d9504c一致；apksigner/zipalign检查通过。
+回滚installed-before.apk SHA256 96f53aa3d41da5cd92dbb7c678a5d89f1c13dd274e2b8e5f2a62e03eb3a39abc；两源码修改前快照*.before.kt。
+
+本轮安装前实时检查：started=true/offroad=0/routeActive=true，Panda ignition=true、安全模式tesla，camerad/controlsd/selfdrived/card/radard/modeld_tinygrad运行。因此未覆盖安装或停止App；已请用户停车退出行车后再实时核验。
+未改C3/Params/CAN/GPIO，未修改原车导航/目的地。当前设备仍旧版，不把本地修复称已实机解决。
+后续：安全停车后保留数据覆盖候选并回读SHA；用原活动路线验证旋屏、熄屏、退出/重进，检查原高德任务ID/路线及release_preserved日志，失败恢复已备份APK。无路线则请乘客恢复原路线，不擅设目的地。
+
+08:09后按用户要求继续只读AR验证：用户尚未通知停车，不安装候选、不再操作旋屏/熄屏。
+ADB与AR页面在线，平板高德任务当前t582，REALTIME/planned=true/matched=true/healthy，直行约59.6km进入泰州北互通；这是用户已恢复的当前路线，本轮未设目的地。
+08:09:52日志accepted=3679/rejected=2，sample frame age172ms，附近decode21ms/frame age188ms。只说明采样点，不能当完整延迟分布或黑闪已解决。
+截图ar-current-followup.png可见当前观测车道内三组白色沿路箭头、导航卡片、白色车道线与红色边缘；高德推荐及本车绝对车道均待确认，因此仍不是绿色推荐/蓝色选道验收。
+用户询问为什么不像高德自身AR：本页是特会开ArRoadActivity自绘Canvas，未调用高德原生AR渲染器；现有arrowShapes用同帧车道多边形插值生成有限三组符号，无路口连续地理路线，视觉仍是验证版。不能将原生高德卡片/视频/白色沿路提示称为已完成完整AR导航。用户强调原车导航未消失，继续保持特斯拉原车与平板高德的区分。
+
+
+2026-10-19 特会开AR排版调整：仅本地，未安装
+用户要求参考高德AR排版。参考高德技术团队驾车AR界面 https://blog.csdn.net/amap_tech/article/details/108211836 和驾车AR截图检索（历史界面，非宣称当前最新版或原生功能接入）。
+本轮改ArRoadActivity.kt及AutoNavigationGuidanceView.kt：左上紧凑转向/距离/道路卡片，右上新鲜C3车速，底部两行车道摘要及详情展开；移除默认顶部多行技术文字遮挡。卡片宽度随窗口尺寸留出速度区。箭头浅阴影/渐变/浅色轮廓，原车道投影、白绿蓝黄语义、年龄/健康/路线匹配门不变，无新增动画时钟或绘制循环。
+AutoNavigationGuidanceView新增默认false的compact参数；仅AR启用，普通导航卡片尺寸与颜色保持。未改相机裁剪、C3控制或协议；不伪造小地图或连续跨路口路径。
+候选配套包含此前用户已授权的EmbeddedAmapBridge/View路线保持修复（尚未安装）。候选ar-layout.apk SHA256 317e566eb45010eda73879fb08972e41436d2ab76a74de90ea2289a9ee6c1de6；相对当前安装版仅classes5.dex和classes8.dex内容变化。签名一致/apksigner/zipalign/差异空白检查通过；assembleTenengkai、assembleDebug及24项相关回归通过，最终窗口宽度调整后assembleTenengkai再次成功。24项验证原有行为，不覆盖新布局像素效果或真实Binder迁移。
+实时车辆started=true/offroad=0/routeActive=true，点火且controlsAllowed=true，控制/相机/模型运行；未安装/停止App或再次旋屏/熄屏。实机新排版与活动路线保持均待停车安装后验证，不能称设备已更新或视觉验收通过。
+回滚APK D:/C3/.codex-tmp/amap-route-preserve-20261019/installed-before.apk；本轮前两源码快照同目录*before-layout.kt；单独路线保持旧候选仍保留，不覆盖。
+
+2026-10-19 08:15—08:20安装及行车实机验证（更新前文“未安装”状态）
+用户明确授权司机继续开车、直接中断特会开。执行保留数据覆盖安装，未重复索要授权，未改C3控制/Params/相机/模型/CAN/GPIO；特斯拉原车导航不属于本次中断范围。
+首装317e566版排版成功，设备回读SHA一致，PID21188。高德首页提供原路线“继续导航”，实际点击该项恢复原路线，未新设目的地。route-resume.png/details.png确认左上导航、右上车速、底部简洁状态与详情切换；出现绿色推荐1、2车道及本车第1车道对应高亮。
+首版路线保持实测未通过：08:17:06.804 release_preserved display21确实把高德任务t584保住，但08:17:07.033导航进入IDLE。保住任务ID不足以保证路线；高德在跨显示配置变化/页面重建时仍会结束路线。不能继续将a0/e287/317e迁回主屏方案称为最终修复。
+因此撤回Bridge新增迁回方法，改EmbeddedAmapView使用单一进程级RetainedDisplay保留VirtualDisplay/Surface/SurfaceTexture及逻辑尺寸，不持有Activity/View。onStop/detach/Surface销毁时保留该显示，不迁移高德任务；重进复用原SurfaceTexture及显示。后台仍停止本View输入与排队动作，不加轮询。逻辑尺寸保持避免高德重建，TextureView缩放画面，触控按逻辑尺寸同步缩放。共享串行worker避免旧请求与重建实例并发。该显示为进程级单一资源，随进程退出释放，非后台永久服务；用户权限门保持。尚未验证长时后台负载和组件撤权后恢复。
+最终安装ar-layout-session.apk SHA256 ee9811249e8d16f5135f51e6230eebc22b956e81932d420bd5f596630f39759b，设备回读一致、PID25780。安装后再次使用高德首页“继续导航”恢复同一原路线。
+08:19:43后正常Home离开3秒再返回，08:19:48.572 display_reattached display23，48.713 launch_complete仍display23；高德任务t586及MainMapActivity记录b970ac6保持。后续REALTIME/planned=true/matched=true/healthy，实际截图session-home-return.png导航7.3km曲塘互通、道路视频与白箭头正常。后台再进入路线保持已实机通过短窗口。
+随后旋屏测试，原Android设置accelerometer_rotation=1/user_rotation=0，临时锁竖屏后恢复1/0；系统最终竖屏。高德仍t586，08:20:13—15持续REALTIME/planned=true/healthy，导航距离6.7km→6.4km。session-final.png确认竖屏布局不重叠、路面视频和箭头恢复；不能把恢复自动旋转后物理姿态仍竖屏说成设置未还原。
+仍有独立延迟问题：08:20:15.340 expired frameAgeMs501，session-rotation-final.png抓到视频清屏，随后session-final.png恢复。未放宽500ms门，不能称旋屏或全程无黑闪。当前推荐/绝对车道又待确认，最新截图为白色沿路提示；蓝/黄箭头和连续转弯路线仍未实车完整验收。
+最终候选编译、既有24项相关单测（缓存）、apksigner/zipalign/差异空白检查通过；安装清单installation.json。首版截图仅代表当时排版/绿色显示，最终版本及回滚以本段和installation.json为准。原旧安装回滚仍amap-route-preserve-20261019/installed-before.apk。未提交/推送，不覆盖其他共享修改。最终实景页保持打开。
+
+
+2026-10-19 高德原生AR空白修复与实机出图
+
+最终结论：已恢复特会开供图→同签名兼容入口→高德6.5.5原生AR渲染。右侧为高德MainMapActivity的原生实景、导航HUD、小地图与行程信息，未将自绘ArRoadActivity当成原生成果。最终v7配套APK安装回读匹配，见installation.json。
+
+事实更正与原因：
+- 10月16日native-mode-request-20261016.md已有原生实景出图的截图证据。此前本对话说“原生尚未接通”遗漏了这份记录，应改成生产转发链未接好，不是高德没有能力。
+- 实时高德6.5.5.600831/versionCode872，SHA256 b74d8a8fd01d51f8619b2a1e86e297a034985dbd7bb60382c78c4e8f460b3bd2，与10月15日ar655-vrd-test安装一致。本轮未改/安装/降级高德。
+- 原兼容包仍是独立临时验证程序0.5-native-recorder-status，未转发到特会开；当前特会开原生服务缺少历史成功版的录像机就绪广播/连接回调，且未接受原生NV21格式0。直接自绘出图不能证明这条原生链已接好。当前实测高德实际选format4，不能把格式0缺口冒称本次唯一根因。
+- 初次换转发器后华为iaware/trustsbase阻止后台关联启动，日志及published=0为证。用正常用户前台ConnectActivity握手启动，不修改appops/白名单/系统权限设置。连接入口受同签名AR_BRIDGE权限保护，特会开显式申请该权限；仍只有高德UID可调用转发Binder，特会开仍只接受同签名兼容入口。既有两个包同签名，保留数据覆盖，没有卸载/清除数据。
+
+最小修复：
+- CameraService固定包名转发器v7增加短暂、无Launcher入口的ConnectActivity，前台绑定并等待实际target就绪，最多3秒后关闭。它无视频、凭据或网络处理，视频接收仍属于特会开。
+- C3ArCameraService补连接/关闭回调、12113查询/12114就绪通知，支持0=NV21到本地1的转换及4=YV12；握手/回调不在状态锁内同步IPC。
+- 只把校验过时间的帧交给高德，接收及解码后均保留500ms单帧拒绝门。Recorder连接存活遵循历史成功版3秒期限，和单帧年龄分开；并非把3秒老帧当新帧发送。高德自身清屏/画面保持策略未做全套验证。
+- NATIVE_START先由用户前台连接入口激活兼容服务；真实源就绪后请求12112/NAVI_TYPE1/CRUISE_TYPE1。首次启动最多3次有限请求，成功open后取消，不无限强制AR。导航“实景”及已有路线自动打开逻辑转向原生；手动配置页中的自绘实景仍保留作诊断，不冒称原生。
+- 未改变C3控制、Params、相机/模型进程、目的地或发送CAN/GPIO。用户此前明确允许行车时中断特会开，本轮沿用该授权覆盖安装。因更新中断/高德页面重新初始化，使用界面现有“继续导航”恢复原路线，没有新设目的地。
+
+验证：
+- assembleTenengkai及arcompat assembleDebug成功；29项定向测试通过（5项格式含新增原生编号/像素布局，15项几何、7项车道呈现、2项嵌入生命周期）。最终Manifest权限补充后再次构建成功，运行时握手通过。全仓既有失败未扩入本轮，不称全量测试通过。
+- 最终特会开tenengkai-native-v7.apk SHA256 116e0f719c4a7c0a9a02cfe94cb49d6e107f1f341f7137182fc398e1b1e63a3c，PID12954；兼容入口native-compat-v7.apk SHA256 3a39700d46e7492c9d8e024e6e5a27f272eac44b4bc3b66ab680f64a67453032/versionCode7。设备SHA均一致，签名证书0ab0d810ccbd2f4032673973473c2448fdb956358c5eb07acc21d73787d9504c；apksigner/zipalign/差异空白检查通过。
+- 连续12秒窗口frames266→363、published118→215，新增97帧全数交付，ready/opened/requested持续true，1280x720/YV12。两张最终截图native-v7-final.png和v7-route-native.png显示变化的真实道路、原生导航11→10km、车速及行程更新；高德控件与小地图可见，证明超过仅校准或静态预览。
+- 原生竖屏曾只显示下部视频，横屏布局更完整。临时旋转设置已恢复原accelerometer_rotation=1/user_rotation=0，最终设备自然横屏。未把临时锁屏偏好遗留。
+- 未完成：临近路口贴路转弯、真实原生标定准确性、长时热/负载、更新/冷启动所有时序、断流全矩阵、C3自定义选道目标向高德原生路面图层的联动。本轮未改高德渲染器或给它伪造投影/许可；当前C3文字选道叠加仍在特会开屏幕层，不能据原生视频/HUD成功称完整C3选道AR已验收。
+
+部署与回滚：
+- 当前两APK以installation.json为准；中间*.apk已清理，之前build-verification.json中8f71版本为权限补充前构建，不是最终安装版。
+- 旧辅助程序APK备份old-helper.apk；特会开修改前备份D:/C3/.codex-tmp/ar-layout-20261019/ar-layout-session.apk（ee9811版）。恢复时同签名保留数据覆盖；辅助程序回旧v5需adb install -r -d（仅该调试包降versionCode），无需卸载高德或清特会开数据。
+- 最终保持特会开导航+右侧高德原生AR打开供用户观察。原生视频服务可通过特会开通知“停止”或配置页停止；不要停止C3驾驶服务。当前后台供帧服务已存在，本轮未修改其文件/启停或部署持久启动钩子。

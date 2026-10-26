@@ -1,0 +1,83 @@
+2026-10-16 特会开直连 C3：部署记录与验收边界
+
+19:07 路面方向箭头与优先选道显示连接：已安装，活动路线实机待验
+- 仅修改 App ArRoadGeometry/ArRoadActivity 和定向测试，复用已同步的 C3 实景车道多边形。按左右成对投影点插值绘制三组透视箭头，跟随观测车道，不固定在屏幕区域；未改变 C3 选道、车辆控制或供帧协议。
+- 确认绝对车道映射时，推荐车道绿色箭头；既有 decisionRelative 确认的 C3 导航 ready/signaling 意向蓝色箭头，不把超车状态冒称导航优先选道。对应不明时仅在观测到的本车车道显示靠左/靠右黄色方向提示；没有推荐数据则白色沿路提示，明确标注选道待确认，不宣称白色是已确认推荐车道。
+- 50米内已知左右操作可绘制车道面内的方向符号；它不是跨路口的连续地理路线轨迹。掉头/环岛/目的地/未知近端操作不伪造轨迹，仍依靠原卡片。无路线、重算、过期、失配、不健康来源或无观测车道时不画路面箭头。
+- 22项 ArRoadGeometry/ArLaneGuidancePresenter 定向测试通过，包含优先车道、导航意向、未知位置回退、左右镜像、远近转向、掉头/未知隐藏、禁止车道与过期清除。assembleTenengkai 成功。
+- APK SHA256 96f53aa3d41da5cd92dbb7c678a5d89f1c13dd274e2b8e5f2a62e03eb3a39abc 已保留数据覆盖，设备回读一致，PID 12016；原版回滚 before-road-arrows.apk。未安装或重启 C3。
+- 安装后真实截图 arrows-installed.png 显示高德“您已进入巡航播报模式”，没有活动路线。已请乘客恢复原路线，未擅自设置目的地；尚未取得本版活动路线下实际绿色/蓝色/黄色箭头截图，不称实车完整验收。此前视频真实延迟尖峰仍是独立未解决项。
+
+18:58 帧龄校准修复已部署；仍有真实延迟尖峰，不能称黑闪全部消除
+- 用户澄清：此前后两次重启由其主动执行，不计为反复崩溃。随后要求停止调查首次卡死原因、重新推送。本轮没有调查或宣称解决首次 C3 卡死。
+- 18:38 旧版持续供帧时 rawUpperMs 从正值漂移为 -34/-39/-50，连续拒绝帧，确认长连接仅使用启动时钟锚点会失效。
+- C3 隔离供帧服务新增认证 /clock；App 每秒采样，仅使用近 3 秒内的时间锚点，并从最近样本选择较紧的保守上界，预留 30ms 短时漂移预算。失效锚点、积压和大于 500ms 帧仍拒绝，不按接收时刻把旧帧重置为新帧。
+- 实测旋屏重建还触发旧连接未释放的 409 和 startForegroundService 超时异常。实景 Activity 自行处理 orientation/screenSize；服务先确认前台通知再处理排队命令；仅连接占用改为可有限重试的 423，源条件不满足仍 409、认证失败仍 401，不绕过源门。
+- 实景取流期间申请 Android Wi-Fi 低延迟锁，停止释放；实机 dumpsys 确认 type=4、WorkSource 10119。离开释放及新版本旋屏恢复尚未专项实机复测，不能据源码声称全部验收。
+- 最终 APK SHA256 09f82ebd495b2b3b199bb90280d9e6f944e66c07c853478fadc557cb3628dae9，保留数据覆盖安装、设备文件哈希一致，PID 5336。修改前回滚 before-clock-sync.apk 保留。中间 d6cacb/65d4d2/0aa24c 不是最终版。
+- C3 c3_ar_source.py SHA256 e8c3ce77ca3da9290291e7b49e33cb47e833f1d9e5b0954d31e329ddbf0d2dd7；备份 /data/tenengkai-ar-source/c3_ar_source.py.before-clock-sync。只重启隔离供帧服务；boot 3217f4d2-c5ca-4f23-8023-51b6d3d3c278 前后不变，未改控制/模型/Params/CAN/GPIO。持久启动钩子仍未部署。
+- 21 项 Android 帧格式/协议/投影/帧龄测试、5 项 Python 认证/连接释放/时钟处理测试通过，最终 assembleTenengkai 成功。没有宣称全仓单测全部通过。
+- 最终版 18:55:01 至 18:58:16 接受 1556 帧、拒绝 2 帧（包含首帧），约 8fps，无负帧龄连锁拒绝。正常帧龄约 150–250ms，解码约 10–41ms；18:55:22、18:57:45–46 等仍记录超时清屏，后者 rawUpperMs=495、sourceAgeMs=167。低延迟锁未完全消除尖峰，不能称整个黑闪问题已解决，也不能仅凭这些值断定尖峰具体发生于无线、排队还是调度。
+- 最终截图 .codex-tmp/ar-overlay-deploy-20261016/clock-final.png；供帧 active=true、ready=true、modelValid=true。实际贴路转弯箭头不属于本轮完成内容。
+
+18:00后整幅视频黑屏闪烁：部分修复，外部连接受阻
+- 用户明确视频整块变黑再恢复。App存在两个提前清屏点：ArVideoFrames.publish遇到单个年龄无效帧调用clear；解码后超时立即调用road.expire。已改为只丢弃该帧，保留上一有效帧直到其原有500ms期限。断流清理与500ms过期门保持，不用冻结旧画面掩盖问题。
+- 已覆盖安装App，设备哈希核对一致：9c2b81c0fe0ef91293b1627867f2f2f8095b8a167a18d8fb3357a628b1ed8b7a。回滚before-frame-drop-fix.apk。
+- 新增5秒间隔接收/拒绝计数与数值帧龄、解码耗时日志，仅技术数值，不含令牌/完整协议包。
+- 本轮C3发生重启：boot_id=8e4d309f-12c0-47d1-bf43-b186e7b8481f，读取时uptime约4分钟；/home为upperdir=/rwtmp/home_upper的临时overlay。隔离目录/data/tenengkai-ar-source保留，但/home/comma/.config/systemd/user不存在，tenengkai-ar-source.service未注册，Linger恢复no，8082无服务。此前“enabled/active”的证据不证明重启后自动恢复，已被这次实机重启否定。
+- 已在本地准备start_ar_source.sh与c3_continue_with_ar.sh：从/data重新注册自己的用户服务，用后台可选钩子保持原continue.sh主启动不等待。两文件bash -n通过。
+- 后续上传失败：SSH多次超时/Connection closed/reset，手机ping192.168.0.12无回复。不能称持久启动钩子已安装；下次连接恢复需先核对远端是否存在本次部分上传/continue.sh哈希，再继续原子部署。
+- 由于端口服务缺失、网络不通，这次App修复后尚无实时帧龄采样，不能声称黑屏已经完全解决。用户已收到当前C3状态确认问题。
+
+17:48~17:54 导航有数据但没有视频：联动修复已安装
+- 原普通NavigationActivity不启动视频；进入旧设置/实景Activity会触发NavigationActivity.onStop，释放高德虚拟显示，实景内出现“未开始高德车机导航”。
+- 两个特会开AR Activity使用局部windowIsTranslucent主题，保持底层NavigationActivity及高德虚拟显示生命周期；实景配置页有自己的白色背景。驾驶控制未改。
+- 已配置视频凭据时，主导航页首次收到真实高德路线自动打开实景；返回地图不反复自动打开。右上角“实景”按钮可再次进入。配置缺失时按钮进入配置页。
+- 实景页复用AutoNavigationGuidanceView显示方向箭头、距离、下一道路。该卡片是屏幕引导，不把无几何依据的转弯箭头伪装成贴路轨迹。
+- 29项相关Android/嵌入生命周期测试通过，两版构建成功。VRD_AL09保留数据覆盖安装且设备APK哈希一致：8c16a11133ce399f65f42e72dcb0862278c94c8bce917795656df325a77d3834。回滚before-route-link.apk。
+- 实机进入AR后，底层高德MainMapActivity仍在Display8/t561保持RESUMED，NavigationActivity只PAUSED未STOPPED；实景显示推荐第1车道/靠左、C3原车否决左侧变道，前车10.0m/24.3kmh/远离4.5kmh及左转54m进入江州南路。
+- 返回地图再进入AR，Display8/t561与相同MainMapActivity实例保持，导航REALTIME/healthy，行程推进到step1/1257m，未改目的地。重新进入实景读取当前2、3推荐车道及本车第2车道。
+- 推荐车道贴路高亮只在位置/路线/几何对应有效时显示，不能把这次文字和卡片通过称为所有路口的贴路AR已验收。长期负载和重启恢复仍未验收。
+- 截图 ar-active-route-first.png（修复前视频及白色视觉前车）、ar-route-linked-live.png（修复后同时有导航、黄色雷达前车）、ar-route-return.png（重新进入首屏）。
+
+后续前车标注调试（09:09后）：
+- 当前App仍高德IDLE、无路线，C3 started=false/相机停止。未设置无关路线或强制唤醒车辆。
+- 读取08:47所在0000017a--fd1c2857fb--3实际日志，241条qlog radarState全有效且leadOne全present，其中200条radar=true；并非当时持续缺少前车。
+- rlog内1207个modelV2中71个轨迹x有低速近零回摆/重复。旧project_leads要求全数组严格递增，从而清空这71帧前车；CP原UI使用最后一个x<=dRel的索引，无此限制。
+- 已将project_leads改为与CP相同索引规则，保留有限值/数组长度/有效高度/屏幕范围等检查。13项投影回归通过，新增低速回摆及重复点用例。
+- 用真实日志lead/path/速度/标定高度、固定投影夹具对比1207帧：原1136帧有前车→1207帧，恢复71帧；原有1136帧输出差0。不是完整相机时间同步重放，不能由此声称全部显示漏帧已消除。
+- 已在供帧无人观看时仅更新隔离目录ar_lane_projection.py，备份ar_lane_projection.py.before-low-speed-fix，重启仅tenengkai-ar-source用户服务；未修改App或驾驶控制进程。
+- 最终模块SHA256：5d62080c7caa6018f8f70c9606e169b336cdb4661c306be9fb0ade8996402f4e，本地与远端一致。证据lead-replay-20261016.json位于本地部署目录。
+- 实机前车标注、推荐车道及路口引导仍待相机正常工作/有效路线时核验；用户已收到唤醒提示。
+
+后续实机验收（08:46~08:48，用户正常唤醒）：
+- C3 health ready=true，实际打开特会开 ArRoadActivity，首次连接收到275帧。截图 ar-live-later.png 确认真实道路画面及白色车道线；不是独立适配器或高德校准页。
+- 8.06秒窗口新增64帧，服务端7.94FPS；源进程CPU约62.8%单核（不是全机62.8%，也不是App实际呈现帧率），不能称低负载或长时性能已验收。
+- 返回设置后active=false，随后3秒新增帧0；重新进入connections=2，frames=340，画面恢复，截图 ar-reopened.png 可见白色车道线、右侧红色道路边缘。
+- 仍未开始高德路线，界面显示“未开始高德车机导航”，推荐车道/路口引导未验。截图未看到前车距离速度标注，不能称雷达叠加显示已实机验证。
+- 手机实景页保留打开供用户查看；离开该页按已验证机制停采。无中转App操作，无控制/Params/CAN/GPIO操作。
+- 截图证据 D:/C3/.codex-tmp/ar-overlay-deploy-20261016/ar-live-later.png 与 ar-reopened.png。
+
+用户要求不使用额外中转 App。本轮特会开实景页直接 HTTP 连接 C3，未安装/打开/改动独立适配器或高德。高德原生 Binder 接口保留，非本页依赖。
+
+App：设置 → C3 实景选道 → 打开特会开实景选道。ROAD_START 开始接收，ROAD_STOP 在离开页面时停止本页拥有的接收服务。已手动开启的原生接口测试不被本页退出停止。
+本页连接不再使用20分钟测试期限；连续失败仍有限退避，成功收到帧重置重连预算。401/409仍停止，不循环绕过源条件。收到409时须相机正常供帧后重新进入页面。
+界面等待画面时显示接收服务状态。只有已运行的相机、有效模型/标定等满足条件才供帧，不开启停车预览，不强制 onroad，不启动驾驶进程。
+
+C3：独立目录 /data/tenengkai-ar-source，用户服务 tenengkai-ar-source.service。
+复用已验证 c3_webd.FrameBroadcaster，仅挂接 /health 和认证 /frames，不启用上游预览、参数、路由或文件接口。依赖从已验证原型目录复制到隔离目录，原型保持不变。
+一名观看者、断开后停止摄像头订阅与JPEG编码。无人观看时只保留低频状态读取，不保留视频帧或录制。私有48位令牌置600权限，App私有配置已通过USB配对；控制台不输出令牌。
+已设置用户服务 enabled/active 与 comma Linger=yes（此前no），供帧服务可独立于SSH会话运行。未整机重启，重启恢复尚未实测；未修改manager、驾驶控制、Params、CAN/GPIO。
+源码SHA256：4334a37c10ac34ad07f11d487be8d2f9a3ea69221ae40d8b7a722231926c43e5。
+服务及依赖安装记录在 /data/tenengkai-ar-source/installation.json。
+
+App保留数据覆盖安装VRD_AL09，设备与本地APK哈希一致：
+f7dd3184d3ad378015a48e309a089b079151b314724b088533a472eb27ed7167
+安装前APK保留 D:/C3/.codex-tmp/ar-overlay-deploy-20261016/before-direct-source.apk。
+
+验证：27项相关Android测试、12项投影测试、4项实际handler隔离测试通过；两版App构建成功。
+实机首次页面打开确实连接到源，未认证401、已认证但相机停止409，App显示拒绝供帧，无假画面。当前车辆已offroad，源health ready=false/frames=0/active=false；不能称真实画面或路口箭头已经验收。
+待验证：正常唤醒后的直连出图、真实推荐车道/雷达随车投影、退出停采、断流恢复、长时负载和重启恢复。没有设置无关目的地。
+GPS提示闪烁是独立已诊断问题，本轮未改。
+
+回滚：覆盖安装已备份App；systemctl --user disable --now tenengkai-ar-source.service 只停本服务。保留隔离目录供恢复。若需撤销Linger，应先检查其它用户服务是否已开始依赖它，不能盲目关闭。

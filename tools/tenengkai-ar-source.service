@@ -1,0 +1,17 @@
+[Unit]
+Description=Tenengkai on-demand read-only C3 road video
+
+[Service]
+Type=simple
+WorkingDirectory=/data/tenengkai-ar-source
+ExecStart=/usr/local/venv/bin/python -B /data/tenengkai-ar-source/c3_ar_source.py
+Restart=on-failure
+RestartSec=10
+Nice=19
+CPUAffinity=0 1 2 3
+UMask=0077
+NoNewPrivileges=true
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

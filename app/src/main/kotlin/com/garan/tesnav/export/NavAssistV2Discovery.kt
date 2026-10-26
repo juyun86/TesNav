@@ -25,6 +25,31 @@ fun interface NavAssistV2EndpointDiscovery {
     fun discover(): NavAssistV2DiscoveryResult
 }
 
+/** Shares the existing signed C3 discovery with read-only AR without trusting the unauthenticated UDP ACK host. */
+object AuthenticatedC3HostDiscovery {
+    @Volatile private var navigationHint: Pair<String, Long>? = null
+
+    internal fun observeNavigationHost(host: String?) {
+        navigationHint = host?.let { it to System.nanoTime() }
+    }
+
+    internal fun navigationHost(nowNs: Long = System.nanoTime()): String? =
+        navigationHint?.takeIf { nowNs - it.second in 0..3_000_000_000L }?.first
+
+    @JvmStatic
+    fun discoverHost(context: android.content.Context): String? = runCatching {
+        val application = context.applicationContext
+        val identity = AndroidKeystoreNavAssistIdentity.loadOrCreate(application)
+        // The navigation ACK supplies a routing hint, not authority to receive the AR token.
+        // Verify the same pinned device using signed discovery before selecting this host.
+        val transport = JvmUdpNavAssistV2DiscoveryTransport(navigationHost())
+        when (val result = UdpNavAssistV2EndpointDiscovery(identity, NavAssistPairingStore(application), transport).discover()) {
+            is NavAssistV2DiscoveryResult.Found -> result.sourceHost
+            else -> null
+        }
+    }.getOrNull()
+}
+
 internal data class NavAssistV2Datagram(
     val sourceAddress: InetAddress,
     val payload: ByteArray,
@@ -164,7 +189,7 @@ internal object NavAssistV2Discovery {
     const val MAX_RESPONSES = 64
 }
 
-internal class JvmUdpNavAssistV2DiscoveryTransport : NavAssistV2DiscoveryTransport {
+internal class JvmUdpNavAssistV2DiscoveryTransport(private val hostHint: String? = null) : NavAssistV2DiscoveryTransport {
     override fun exchange(request: ByteArray): List<NavAssistV2Datagram> {
         require(request.size <= NavAssistV2Discovery.MAX_DATAGRAM_BYTES) { "discovery request too large" }
         DatagramSocket().use { socket ->
@@ -202,6 +227,8 @@ internal class JvmUdpNavAssistV2DiscoveryTransport : NavAssistV2DiscoveryTranspo
 
     private fun broadcastTargets(): List<InetAddress> {
         val targets = linkedSetOf<InetAddress>()
+        hostHint?.takeIf { com.garan.tesnav.ar.ArFrameFormat.validEndpoint("http://$it:8082/frames") }
+            ?.let { InetAddress.getByName(it) }?.let(targets::add)
         targets += InetAddress.getByName("255.255.255.255")
         val interfaces = runCatching { Collections.list(NetworkInterface.getNetworkInterfaces()) }.getOrDefault(emptyList())
         interfaces.asSequence()
