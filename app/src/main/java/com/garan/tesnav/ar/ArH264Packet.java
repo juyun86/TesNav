@@ -12,11 +12,12 @@ public final class ArH264Packet {
     public final byte[] annexB;
     public final String metadata;
     public final String geometry;
+    public final String camera;
     public final boolean config, keyframe;
     public final int width, height;
     public final long frameId, timestampEofNs, ptsUs;
     private ArH264Packet(byte[] data, String json, JsonObject root) {
-        annexB=data; metadata=json; geometry=root.has("geometry") ? root.getAsJsonObject("geometry").toString() : "";
+        annexB=data; metadata=json; camera=root.get("camera").getAsString(); geometry=root.has("geometry") ? root.getAsJsonObject("geometry").toString() : "";
         config=root.get("config").getAsBoolean(); keyframe=root.get("keyframe").getAsBoolean();
         width=(int)integer(root,"width"); height=(int)integer(root,"height");
         frameId=integer(root,"frameId"); timestampEofNs=integer(root,"timestampEofNs"); ptsUs=integer(root,"ptsUs");

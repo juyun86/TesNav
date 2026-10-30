@@ -16,7 +16,7 @@ public final class ArCameraCalibration {
             JsonObject geometry = root.getAsJsonObject("geometry");
             JsonObject calibration = geometry.getAsJsonObject("cameraCalibration");
             if (packet.config || elapsedMs <= 0 || packet.width != 1280 || packet.height != 720 ||
-                    !"narrowRoad".equals(root.get("camera").getAsString()) ||
+                    !("narrowRoad".equals(root.get("camera").getAsString()) || "wideRoad".equals(root.get("camera").getAsString())) ||
                     !"native".equals(geometry.get("inputMode").getAsString()) ||
                     calibration.get("version").getAsInt() != 1 ||
                     !"ox03c10".equals(calibration.get("sensor").getAsString())) throw new IllegalArgumentException();
@@ -26,10 +26,20 @@ public final class ArCameraCalibration {
                     size.get(1).getAsInt()!=root.get("sourceHeight").getAsInt() ||
                     !crop.equals(root.getAsJsonArray("crop"))) throw new IllegalArgumentException();
             double l=crop.get(0).getAsDouble(),t=crop.get(1).getAsDouble(),r=crop.get(2).getAsDouble(),b=crop.get(3).getAsDouble();
-            // Current AVC path is a pixel crop, with no rescale or letterboxing.
+            boolean wide = "wideRoad".equals(root.get("camera").getAsString());
             if (!(l>=0 && t>=0 && r<=size.get(0).getAsInt() && b<=size.get(1).getAsInt() &&
-                    r-l==packet.width && b-t==packet.height)) throw new IllegalArgumentException();
-            double fx=k.get(0).getAsDouble(),fy=k.get(1).getAsDouble(),cx=k.get(2).getAsDouble()-l,cy=k.get(3).getAsDouble()-t;
+                    r>l && b>t)) throw new IllegalArgumentException();
+            if (wide) {
+                // The wide crop and scale were exercised with the actual NEON encoder.
+                if (!(size.get(0).getAsInt()==1928 && size.get(1).getAsInt()==1208 &&
+                        l==464 && t==330 && r==1424 && b==870 &&
+                        k.get(0).getAsDouble()==567 && k.get(1).getAsDouble()==567 &&
+                        k.get(2).getAsDouble()==964 && k.get(3).getAsDouble()==604)) throw new IllegalArgumentException();
+            } else if (!(r-l==packet.width && b-t==packet.height)) throw new IllegalArgumentException();
+            double sx=packet.width/(r-l),sy=packet.height/(b-t);
+            if (Math.abs(sx-sy)>1e-12) throw new IllegalArgumentException();
+            double fx=k.get(0).getAsDouble()*sx,fy=k.get(1).getAsDouble()*sy,
+                    cx=(k.get(2).getAsDouble()-l)*sx,cy=(k.get(3).getAsDouble()-t)*sy;
             if (!(Double.isFinite(fx) && Double.isFinite(fy) && fx>=100 && fy>=100 && fx<=10000 && fy<=10000 &&
                     cx>=0 && cx<packet.width && cy>=0 && cy<packet.height)) throw new IllegalArgumentException();
             double height = 0;

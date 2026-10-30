@@ -1,10 +1,11 @@
 """User-authorized, on-demand read-only subscription to an already running road camera.
 No Params writes, preview activation, process restart, control or CAN operations.
 """
-import asyncio,os,struct,sys,time,json
+import asyncio,os,struct,sys,time,json,math
 from pathlib import Path
 from types import SimpleNamespace
 HERE=Path(__file__).resolve().parent
+NATIVE_PROFILE=json.loads((HERE/'native_crop.json').read_text()) if (HERE/'native_crop.json').exists() else None
 sys.path[:0]=[str(HERE/'deps'),'/data/openpilot','/data/openpilot/opendbc_repo','/data/openpilot/msgq_repo']
 os.nice(19)
 os.sched_setaffinity(0,{0,1,2,3})
@@ -19,9 +20,26 @@ state=messaging.SubMaster(['deviceState','managerState','modelV2','wideRoadCamer
                           'narrowRoadCameraState','carState','selfdriveState','extrinsicsCalibration','radarState'])
 token=(HERE/'stream.token').read_text().strip()
 lock=asyncio.Lock()
-stats={'connections':0,'frames':0,'active':False,'fpsLimit':8,'maxSize':[1280,802],'jpegQuality':88,
+stats={'connections':0,'frames':0,'active':False,'fpsLimit':20,'maxSize':[1280,802],'jpegQuality':88,
        'camera':'pending','crop':'C3 UI viewport','uiViewport':[2100,1020],
        'encoder':'downsample NV12 then encode YCbCr JPEG without RGB expansion'}
+
+def native_crop(width,height,sensor,wide=False):
+    if wide:
+        if (width,height,sensor)!=(1928,1208,'ox03c10'):
+            raise ValueError('wide camera identity not validated')
+        return (464.,330.,1424.,870.)
+    # A fixed virtual framing adjustment, not a change to the device calibration.
+    if NATIVE_PROFILE is None:return (0.,0.,float(width),float(height))
+    assert NATIVE_PROFILE['version']==1 and NATIVE_PROFILE['sourceSize']==[width,height], 'native crop source dimensions changed'
+    assert NATIVE_PROFILE['sensor']==sensor, 'native crop sensor changed'
+    assert NATIVE_PROFILE.get('camera','narrowRoad') in ('narrowRoad','wideRoad'), 'invalid native camera'
+    crop=tuple(float(v) for v in NATIVE_PROFILE['crop'])
+    assert len(crop)==4 and all(math.isfinite(v) for v in crop)
+    left,top,right,bottom=crop
+    assert 0<=left<right<=width and 0<=top<bottom<=height
+    assert abs((right-left)*9-(bottom-top)*16)<1e-6
+    return crop
 
 def ui_crop(width,height,intrinsic,calibration,wide):
     """Same view transform as AugmentedRoadView._calc_frame_matrix, without HUD.
@@ -84,13 +102,27 @@ def running_camera():
             any(p.name=='camerad' and p.running for p in state['managerState'].processes))
 
 class Client:
-    def __init__(self):
+    def __init__(self,native=False):
+        self.native=native
         self.client=None;self.wide=False
         self.calibration=view_frame_from_device_frame.copy()
         self.wide_calibration=view_frame_from_device_frame.copy()
+    def selected_native_camera(self):
+        target=self.wide
+        names=('carState','selfdriveState','wideRoadCameraState')
+        now=time.monotonic_ns()
+        if all(state.alive[n] and state.valid[n] and 0<=now-state.logMonoTime[n]<=1_000_000_000 for n in names):
+            speed=float(state['carState'].vEgo)
+            if not state['selfdriveState'].experimentalMode:target=False
+            elif math.isfinite(speed) and speed>=0:
+                if speed<10:target=True
+                elif speed>15:target=False
+        return 'wideRoad' if target else 'narrowRoad'
+
     def connect(self,block):
         target=self.wide
-        if state['selfdriveState'].experimentalMode:
+        if self.native:target=bool(NATIVE_PROFILE and NATIVE_PROFILE.get('camera')=='wideRoad')
+        elif state['selfdriveState'].experimentalMode:
             if state['carState'].vEgo<10:target=True
             elif state['carState'].vEgo>15:target=False
         else:target=False
@@ -105,6 +137,11 @@ class Client:
         frame=self.client.recv(timeout_ms)
         if frame is None:return None
         c=self.client
+        crop,geometry=self.describe(int(c.frame_id),int(c.timestamp_eof),c.width,c.height)
+        return SimpleNamespace(data=frame.data,width=c.width,height=c.height,stride=c.stride,uv_offset=c.uv_offset,crop=crop,geometry=geometry,timestamp_eof=int(c.timestamp_eof))
+
+    def describe(self,frame_id,timestamp_eof,width,height):
+        c=SimpleNamespace(frame_id=frame_id,timestamp_eof=timestamp_eof,width=width,height=height)
         sensor=str(state['narrowRoadCameraState'].sensor)
         config=DEVICE_CAMERAS[(str(state['deviceState'].deviceType),sensor)]
         camera=config.wide_road if self.wide else config.narrow_road
@@ -116,13 +153,41 @@ class Client:
             if len(calib.wideFromDeviceEuler)==3:
                 self.wide_calibration=view_frame_from_device_frame @ rot_from_euler(calib.wideFromDeviceEuler) @ device_from_calib
         matrix=self.wide_calibration if self.wide else self.calibration
-        crop=ui_crop(c.width,c.height,camera.intrinsics,matrix,self.wide)
+        crop=native_crop(c.width,c.height,sensor,self.wide) if self.native else ui_crop(c.width,c.height,camera.intrinsics,matrix,self.wide)
         model=state['modelV2']
         # Use the same camera frame IDs/timestamps that accompany this VisionIPC buffer.
         model_id=int(model.frameIdExtra if self.wide else model.frameId)
         lag_ms=(int(c.timestamp_eof)-int(model.timestampEof))/1e6
         geometry={'version':1,'frameId':int(c.frame_id),'modelFrameId':model_id,
-                  'camera':'wideRoad' if self.wide else 'narrowRoad','lagMs':lag_ms,'lanes':[]}
+                  'camera':'wideRoad' if self.wide else 'narrowRoad','lagMs':lag_ms,'lanes':[],
+                  'inputMode':'native' if self.native else 'enhanced'}
+        # Intrinsics belong to the delivered image, independently of model/pose validity.
+        # The receiver applies the explicitly supplied crop and encoded-size transform.
+        if self.native:
+            k=camera.intrinsics
+            geometry['cameraCalibration']={'version':1,'sensor':sensor,
+                'sourceSize':[c.width,c.height],'crop':list(crop),
+                'intrinsics':[float(k[0,0]),float(k[1,1]),float(k[0,2]),float(k[1,2])]}
+        # Session calibration snapshot; never substitute the initialization constant.
+        if 'cameraCalibration' in geometry:
+            age=(time.monotonic_ns()-state.logMonoTime['extrinsicsCalibration'])/1e6
+            if (state.alive['extrinsicsCalibration'] and state.valid['extrinsicsCalibration'] and
+                str(calib.calStatus)=='calibrated' and int(calib.validBlocks)>0 and
+                0<=age<=3000 and len(calib.height)==1):
+                value=float(calib.height[0])
+                if math.isfinite(value) and 0.5<=value<=3.0:
+                    geometry['cameraCalibration'].update(heightM=value,heightStatus='calibrated')
+        if self.native and self.wide:
+            age=(time.monotonic_ns()-state.logMonoTime['extrinsicsCalibration'])/1e6
+            if not (state.alive['extrinsicsCalibration'] and state.valid['extrinsicsCalibration'] and
+                    str(calib.calStatus)=='calibrated' and int(calib.validBlocks)>0 and 0<=age<=3000 and
+                    len(calib.rpyCalib)==3 and len(calib.wideFromDeviceEuler)==3 and
+                    all(math.isfinite(float(v)) for v in (*calib.rpyCalib,*calib.wideFromDeviceEuler)) and
+                    geometry['cameraCalibration'].get('heightStatus')=='calibrated'):
+                raise ValueError('fresh wide camera calibration unavailable')
+            geometry['cameraCalibration'].update(
+                rpyCalib=[float(v) for v in calib.rpyCalib],
+                wideFromDeviceEuler=[float(v) for v in calib.wideFromDeviceEuler])
         if (str(calib.calStatus)=='calibrated' and state.valid['modelV2'] and
             abs(int(c.frame_id)-model_id)<=3 and 0<=lag_ms<=150):
             from ar_lane_projection import project_lanes,project_paths
@@ -143,7 +208,7 @@ class Client:
                 geometry['leads']=project_leads(leads,list(model.position.x),list(model.position.z),
                     float(calib.height[0]),float(state['carState'].vEgo),camera.intrinsics,matrix,crop)
                 geometry['radarDeltaMs']=radar_delta_ms
-        return SimpleNamespace(data=frame.data,width=c.width,height=c.height,stride=c.stride,uv_offset=c.uv_offset,crop=crop,geometry=geometry,timestamp_eof=int(c.timestamp_eof))
+        return crop,geometry
 
 async def health(request):
     ready=running_camera()
@@ -156,28 +221,45 @@ async def clock_sample(request):
 async def frames(request):
     request_epoch=time.monotonic_ns()/1e6
     if request.headers.get('Authorization')!='Bearer '+token:raise web.HTTPUnauthorized()
-    if lock.locked():raise web.HTTPLocked(text='one viewer at a time')
+    if lock.locked():return web.Response(status=423,text='one viewer at a time')
     state.update(0)
     if not running_camera():raise web.HTTPConflict(text='existing onroad camera/model required')
+    if request.headers.get('X-C3-AR-Codec')=='h264':
+        from ar_h264_stream import stream_h264
+        async with lock:
+            return await stream_h264(request,request_epoch,Client,stats,running_camera,NATIVE_PROFILE,HERE)
     async with lock:
         geometry=request.headers.get('X-C3-AR-Geometry')=='1'
-        bc=upstream.FrameBroadcaster('road',fps=8,client_factory=Client,
+        native=request.headers.get('X-C3-AR-Native')=='1'
+        native_camera='wide' if NATIVE_PROFILE and NATIVE_PROFILE.get('camera')=='wideRoad' else 'narrow'
+        stats['mode']=('native-fixed-'+native_camera+'-crop' if NATIVE_PROFILE else 'native-fixed-narrow') if native else 'c3-ui'
+        stats['crop']=('fixed native horizon crop' if NATIVE_PROFILE else 'full fixed camera') if native else 'C3 UI viewport'
+        bc=upstream.FrameBroadcaster('road',fps=20,client_factory=lambda:Client(native),
                                     encoder_factory=lambda:TrialJpegEncoder(geometry))
         queue=None
         try:
             stats['active']=True
             await bc.start();queue=bc.subscribe()
             payload=await asyncio.wait_for(queue.get(),8)
-            if not payload:raise RuntimeError('no existing frame')
+            if not payload:
+                stats['lastFrameError']=(bc.error or 'no existing frame')[:160]
+                raise RuntimeError('no existing frame')
             response=web.StreamResponse(headers={'Content-Type':'application/octet-stream','Cache-Control':'no-store'})
             if geometry:
                 response.headers['X-C3-AR-Protocol']='2'
                 response.headers['X-C3-AR-Epoch-Ms']=str(request_epoch)
             await response.prepare(request);stats['connections']+=1
             while running_camera() and request.transport is not None and not request.transport.is_closing():
-                await response.write(struct.pack('!I',len(payload))+payload);stats['frames']+=1
+                try:
+                    await asyncio.wait_for(response.write(struct.pack('!I',len(payload))+payload),4)
+                except (asyncio.TimeoutError,ConnectionError):
+                    # A stalled/disconnected receiver must release the single-viewer slot.
+                    break
+                stats['frames']+=1
                 payload=await asyncio.wait_for(queue.get(),4)
-                if not payload:break
+                if not payload:
+                    stats['lastFrameError']=(bc.error or 'camera reader stopped')[:160]
+                    break
             return response
         finally:
             if queue is not None:bc.unsubscribe(queue)

@@ -37,6 +37,9 @@ public final class C3ArCameraService extends Service {
         android.util.Log.i("Tenengkai-Proto", key + " t=" + now);
     }
     private long lastCalibrationAt;
+    private byte[] lastCameraOptics;
+    // 0: delivering; 1: awaiting explicit exit reply; 2: awaiting new camera open.
+    private int cameraSwitchPhase;
     private volatile long lastConsumeAt;
     private volatile String inputCodec = "jpeg";
     private volatile String resolvedHost = "none";
@@ -89,6 +92,15 @@ public final class C3ArCameraService extends Service {
             } else if (type == 12112) {
                 nativeResponse = intent.getIntExtra("EXTRA_RESPONSE_CODE", -1);
                 android.util.Log.i("Tenengkai-NativeAr", "modeResponse="+nativeResponse);
+                synchronized (C3ArCameraService.this) {
+                    if (cameraSwitchPhase == 1 && intent.getIntExtra("exitAR", -1) == 1) {
+                        if (nativeResponse == 1) {
+                            cameraSwitchPhase = 2;
+                            nativeAttempts = 0;
+                            requestNativeDisplay();
+                        } else status = "高德未接受切镜头退出请求";
+                    }
+                }
             } else if (type == 12116) {
                 sendCameraIdentity();
             }
@@ -467,6 +479,10 @@ public final class C3ArCameraService extends Service {
             synchronized (this) {
                 if (ticket == openGeneration && sourceReady && openRequested && receiver == callback) {
                     opened = true; callbackHandler.removeCallbacks(nativeRetry);
+                    if (cameraSwitchPhase == 2) {
+                        cameraSwitchPhase = 0;
+                        note("camera-switch reopened");
+                    }
                     com.garan.tesnav.ui.ArVideoFrames.setNativeCameraOpen(nativeOwned);
                 }
             }
@@ -564,12 +580,15 @@ public final class C3ArCameraService extends Service {
         }
     }};
     private void requestNativeDisplay() {
+        if (cameraSwitchPhase == 1) return;
         nativeRequest = false;
         if (nativeAttempts >= 3) return;
         nativeAttempts++;
+        final int exitAr = cameraSwitchPhase == 2 ? 0 : -1;
         callbackHandler.post(() -> sendBroadcast(new Intent("AUTONAVI_STANDARD_BROADCAST_RECV")
             .setComponent(new ComponentName("com.autonavi.amapauto", "com.autonavi.amapauto.adapter.internal.AmapAutoBroadcastReceiver"))
-            .putExtra("KEY_TYPE",12112).putExtra("EXTRA_NAVI_TYPE",1).putExtra("EXTRA_CRUISE_TYPE",1)));
+            .putExtra("KEY_TYPE",12112).putExtra("EXTRA_NAVI_TYPE",1).putExtra("EXTRA_CRUISE_TYPE",1)
+            .putExtra("exitAR",exitAr)));
         callbackHandler.removeCallbacks(nativeRetry);
         callbackHandler.postDelayed(nativeRetry, nativeAttempts*1_000L);
     }
@@ -581,14 +600,32 @@ public final class C3ArCameraService extends Service {
         long now = SystemClock.elapsedRealtime();
         byte[] bytes = ArCameraCalibration.encode(packet, now);
         if (!ArCameraCalibration.hasValidHeight(bytes)) return false;
-        if (now-lastCalibrationAt < 1000) return true;
+        byte[] optics = Arrays.copyOfRange(bytes,16,56);
+        boolean changed = lastCameraOptics != null && !Arrays.equals(lastCameraOptics,optics);
+        // A new lens must bypass the periodic calibration refresh throttle.
+        if (!changed && now-lastCalibrationAt < 1000) return cameraSwitchPhase == 0;
+        if (changed && cameraSwitchPhase != 0) return false;
         File dir = getExternalFilesDir(null);
         if (dir == null) throw new IOException("Calibration storage unavailable");
         File staged = new File(dir,"c3-amap-camera.tmp"), current = new File(dir,"c3-amap-camera.bin");
         try (FileOutputStream stream = new FileOutputStream(staged)) { stream.write(bytes); }
         if (!staged.renameTo(current)) throw new IOException("Calibration publish failed");
         lastCalibrationAt = now;
-        return true;
+        lastCameraOptics = optics;
+        if (changed && nativeOwned && (opened || openRequested)) {
+            cameraSwitchPhase = 1;
+            nativeRequest = false;
+            callbackHandler.removeCallbacks(nativeRetry);
+            if (opened) notifyState(4);
+            closeMemory();
+            openRequested = false;
+            note("camera-switch exit requested");
+            callbackHandler.post(() -> sendBroadcast(new Intent("AUTONAVI_STANDARD_BROADCAST_RECV")
+                .setComponent(new ComponentName("com.autonavi.amapauto", "com.autonavi.amapauto.adapter.internal.AmapAutoBroadcastReceiver"))
+                .putExtra("KEY_TYPE",12112).putExtra("EXTRA_NAVI_TYPE",1).putExtra("EXTRA_CRUISE_TYPE",1)
+                .putExtra("exitAR",1)));
+        }
+        return cameraSwitchPhase == 0;
     }
     private synchronized void clearCalibration() {
         File dir = getExternalFilesDir(null);
@@ -597,6 +634,8 @@ public final class C3ArCameraService extends Service {
             new File(dir,"c3-amap-camera.tmp").delete();
         }
         lastCalibrationAt = 0;
+        lastCameraOptics = null;
+        cameraSwitchPhase = 0;
     }
     private void sendCameraIdentity() {
         // Identity only; validated optics arrive with the authenticated video metadata.
@@ -638,6 +677,7 @@ public final class C3ArCameraService extends Service {
         closeMemory(); reopenAfterReconnect = resume;
     }
     private synchronized void resumeConsumer() {
+        if (cameraSwitchPhase == 1) return;
         if ((!openRequested && !reopenAfterReconnect) || opened || callback == null || !sourceReady) return;
         reopenAfterReconnect = false;
         int request = ++openGeneration;
@@ -689,6 +729,7 @@ public final class C3ArCameraService extends Service {
             (nativeStatusAt == 0 ? -1 : SystemClock.elapsedRealtime()-nativeStatusAt)+" modeResponse="+nativeResponse);
         writer.println("inputMode="+(nativeOwned ? "native" : roadOwned ? "enhanced" : "preview")+
             " codec="+inputCodec+" resolvedHost="+resolvedHost+" status="+status);
+        writer.println("cameraSwitchPhase="+cameraSwitchPhase);
     }
     @Override public void onDestroy() { stopTest(); unregisterReceiver(recorderReceiver); callbacks.quitSafely(); super.onDestroy(); }
 }

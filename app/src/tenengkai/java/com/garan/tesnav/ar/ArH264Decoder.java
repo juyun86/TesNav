@@ -23,6 +23,7 @@ public final class ArH264Decoder implements Closeable {
     private final Map<Long, ArH264Packet> pending = new LinkedHashMap<>();
     private MediaCodec codec;
     private byte[] config;
+    private String camera;
     private boolean waitingForKeyframe = true;
     private int width, height;
     private String codecName = "";
@@ -33,12 +34,13 @@ public final class ArH264Decoder implements Closeable {
     public void accept(ArH264Packet packet) throws IOException {
         if (ended) throw new IOException("AVC decoder already drained");
         if (packet.config) {
-            if (config == null || !Arrays.equals(config,packet.annexB) || width!=packet.width || height!=packet.height) {
-                stopCodec(); config=packet.annexB; width=packet.width; height=packet.height;
+            if (config == null || !Arrays.equals(config,packet.annexB) || width!=packet.width || height!=packet.height || !packet.camera.equals(camera)) {
+                stopCodec(); config=packet.annexB; width=packet.width; height=packet.height; camera=packet.camera;
             }
             return;
         }
         if (config == null) throw new IOException("Missing AVC configuration");
+        if (!packet.camera.equals(camera)) throw new IOException("AVC camera changed without configuration");
         if (packet.width!=width || packet.height!=height) throw new IOException("AVC dimensions changed without configuration");
         if (waitingForKeyframe && !packet.keyframe) return;
         if (codec == null) startCodec();
@@ -131,5 +133,5 @@ public final class ArH264Decoder implements Closeable {
             finally { previous.release(); }
         }
     }
-    @Override public void close() { stopCodec();config=null;width=height=0; }
+    @Override public void close() { stopCodec();config=null;camera=null;width=height=0; }
 }

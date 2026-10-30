@@ -47,4 +47,23 @@ class ArCameraCalibrationTest {
         assertFalse(ArCameraCalibration.hasValidHeight(null))
         assertFalse(ArCameraCalibration.hasValidHeight(ByteArray(79)))
     }
+    @Test fun wideCropScalesOpticsAndSwitchesBackWithoutAccumulatingScale() {
+        val wide=metadata.replace("narrowRoad","wideRoad")
+            .replace("[340,462,1620,1182]","[464,330,1424,870]")
+            .replace("[2648,2648,964,604]","[567,567,964,604]")
+        for (json in listOf(metadata,wide,metadata,wide)) {
+            val p=packet(json)
+            val b=ByteBuffer.wrap(ArCameraCalibration.encode(p,10000)).order(ByteOrder.LITTLE_ENDIAN)
+            if (p.camera=="wideRoad") {
+                assertEquals(756.0,b.getDouble(24),1e-9)
+                assertEquals(756.0,b.getDouble(32),1e-9)
+                assertEquals(666.6666666667,b.getDouble(40),1e-9)
+                assertEquals(365.3333333333,b.getDouble(48),1e-9)
+            } else {
+                assertEquals(2648.0,b.getDouble(24),0.0)
+                assertEquals(624.0,b.getDouble(40),0.0)
+                assertEquals(142.0,b.getDouble(48),0.0)
+            }
+        }
+    }
 }
