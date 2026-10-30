@@ -19,3 +19,13 @@
 远程源快照含此前未验收的原车定位发送候选；全量 APK 仅用于构建验证，不能作为当前已恢复版本的等价安装包。现场试验需要仅移植本次相机类并配套发送端，保留当前其他行为。
 
 tools/c3_ar_source.py 同步了本地已验证 H264/相机标定实现后加入选择器。tools/ar_h264_stream.py 与 tools/ar_h264_worker_neon.cc 为配套发送端；设备的 h264-prototype/ar_h264_worker 需使用该 NEON 实现，不能拿旧只裁剪编码器发送广角缩放参数。
+
+## 后续安装与平板实测
+
+用户要求继续后，以已恢复特会开 APK 36843003 为基线，仅替换四组相机类及其内部/合成类，其他 DEX、资源和 Manifest 保留。相机专用 APK `665c6d876212f6840b4626384e9839cc3a619cc58dc0552644e1e300df65ff60` 已保留数据安装；并非上文全量构建 APK。高德安装包未改。
+
+平板实际 OMX.hisi.video.decoder.avc 回放此前保存的三段真实相机录像：2 次切换，186 帧输入，178 帧解码，8 帧在切换点由旧队列主动丢弃；逐输入时间戳核对后无未归属输出，3 帧独立共享内存写入比对通过。旧探针要求所有输入输出相等，首次因此报告 178/186 失败；新探针明确统计切换时尚在队列中的输入，非忽略任意丢帧。该测试不连接高德，不证明 AR 重读或道路贴合。两个临时测试包已卸载。
+
+C3 已安装配套 c3_ar_source.py、ar_h264_stream.py 及此前验证的 NEON worker，仅重载独立 tenengkai-ar-source 用户服务，服务 active。备份 `/data/tenengkai-ar-source/backups/camera-switch-20261030-061848`；安装证据位于主工作区 `.codex-tmp/ar-auto-camera-switch-20261029/camera-switch-source-installation.json`，相机包范围见 camera-reinit-manifest.json。
+
+收尾 C3 started=false、ready=false、cameradRunning=false，不能取得实时高德退出/重入及内参重读结果。未恢复环境、强制启动相机、重启 manager、修改车控或部署 JPEG 自动恢复。真实速度跨阈值、高德重新读取内参、广角姿态/铺路仍未验收。
