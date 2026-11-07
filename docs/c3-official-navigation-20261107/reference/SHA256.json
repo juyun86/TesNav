@@ -1,0 +1,127 @@
+[
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/export/NavAssistModelRoute.kt",
+    "sha256": "d0ee16c38647164f77fe5b35b8bf0952bc164ede5663b85539e321bda48465f1",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/export/NavRouteFragments.kt",
+    "sha256": "f5e3b8c9d3720b96bd342eeebc9077e49a188b1a39319a7fd9c92821fe420d58",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/export/NavRouteUdpSender.kt",
+    "sha256": "28cea8b232a93dbfc258d9068a2d607666ec3f72acb28618c0bfebcb71001d30",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/export/HttpNavAssistV2Exporter.kt",
+    "sha256": "f4ef3617156510d1f4b1654f766d46951f970621e8af96d19c6dbfeaaf5d8cbe",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/export/UdpNavAssistV3Client.kt",
+    "sha256": "e522dbda3cc0bfd65ac56c6e21b6905b9ed2d847605e3fd124fad112e5004f15",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/data/NavigationRepository.kt",
+    "sha256": "7679e3a2eb2e803641c1d87ac41c06a469e99f5852d173cfd5af5a50fc95c990",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/main/kotlin/com/garan/tesnav/service/NavigationForegroundService.kt",
+    "sha256": "2482792bd7400e7e497973cdda76a72819851677dde33519ed50034c35bf32ad",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/test/kotlin/com/garan/tesnav/export/NavAssistModelRouteTest.kt",
+    "sha256": "e484701957a3c2e8ad901301e56c2e00834b38afca5c5761a05090b78b872736",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/test/kotlin/com/garan/tesnav/export/NavRouteFragmentsTest.kt",
+    "sha256": "c6cc6ae1ce09ad32f7c02c0a4b8e9435e35ba3a5e90c1a397934c91d2db29b8a",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/app/app/src/test/kotlin/com/garan/tesnav/export/NavRouteUdpSenderTest.kt",
+    "sha256": "eacdedfe5570a58d18d101c16c8724d1c6da0495857f93faef035730c4051780",
+    "source": "TesNav local working tree, collected 2026-11-07"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/amap_steps.py",
+    "sha256": "676a31d79e2e7b25111ecdf2cf415e5193c9427a20a3034236ffa22d4f5a321c",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/route_chunks.py",
+    "sha256": "ca02c114fab584d680e33f174048006392497a5a438d0e44ed143c75e6e9c3bb",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/route_commit.py",
+    "sha256": "4f858dd137eb7b2c94fd7f7959594658a1c5fc4e6d9ec4a254f2a03cf0aa6b97",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/phone_route_transfer.py",
+    "sha256": "031cc7c47ef92aa06c805d95686111b13459d67b4106634f5527df574d9d1a25",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/route.py",
+    "sha256": "6570f005af8e0a212e06b286a97bf9199a48ccd3ef1a22dbd393b290c91aaa5c",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/service.py",
+    "sha256": "c599f963d7e957e59bdfd152a54aa912bb7a0c9029c62b2ed29b365fc4e27341",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/live_navigation.py",
+    "sha256": "8305051718e4a733f805fe76da9eb460555af265ec1b1adf8efc90c512a12890",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/live_packet.py",
+    "sha256": "5f054f877b088fdbf321b0e61d70e190fe18a9e5dd1ac5ec2b9e962d74a80734",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/model_navigation.py",
+    "sha256": "be5bb9424d11b883a8e5e81ae687524a2398aa389ec730e5849036417b74d2f1",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/COORDTRANSFORM_LICENSE.txt",
+    "sha256": "04479b2844a4f8a45ee340573c145efe00dd608e851cc8a488cd5762e1b0c63d",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-tesnav-candidate/THIRD_PARTY_NAVIGATION_LICENSE.txt",
+    "sha256": "cdff070bf70ed81cfb0f6d36ce95833427a21cef597a612c1d7a90f9e3fb2181",
+    "source": "2026-11-06 isolated candidate, not verified as deployed"
+  },
+  {
+    "path": "reference/c3-host-candidate/navigation_host_candidate.py",
+    "sha256": "19f25ed895e75ad2e55538cb36e67d2033a4e8ef1a8cad43c6feb1c884db13c0",
+    "source": "2026-11-06 isolated host candidate"
+  },
+  {
+    "path": "reference/c3-model-baseline/loop.py",
+    "sha256": "4200d056db090ca513af0734275e202dde27e7c9e8ffddbb99e91ecb2f1a185f",
+    "source": "2026-11-06 diagnostic baseline, not current-state evidence"
+  },
+  {
+    "path": "reference/c3-model-baseline/model.py",
+    "sha256": "9b0697af3deca3dab357e2adea5a3cccdf85b75bc1c715f2c1b396790110241a",
+    "source": "2026-11-06 diagnostic baseline, not current-state evidence"
+  },
+  {
+    "path": "reference/c3-model-baseline/runner.py",
+    "sha256": "79434bfd13332019dc747843d37a8f4b289ab69fecf2a0e9e6d0da658f1eab0a",
+    "source": "2026-11-06 diagnostic baseline, not current-state evidence"
+  }
+]
